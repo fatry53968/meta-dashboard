@@ -506,6 +506,7 @@ function renderFlatTable(clientIdx, rawAds, period) {
 
   // Merge by ad_name only
   const filtered = (rawAds||[]).filter(a => parseFloat(a.spend||0) > 0);
+  filtered.forEach(a => console.log('[raw] client='+clientIdx+' camp="'+(a.campaign_name||'NULL')+'" spend='+a.spend));
   const map = {};
   for (const ad of filtered) {
     const key = normalizeAdName(ad.ad_name);
