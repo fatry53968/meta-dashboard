@@ -620,53 +620,44 @@ async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYester
 
   function prepAds(rawAds) {
     if (!rawAds || rawAds.length === 0) return {};
-    const filtered = rawAds.filter(a => parseFloat(a.spend||0) > 0);
-    const map = {};
-    for (const ad of filtered) {
-      const key = normalizeAdName(ad.ad_name);
-      if (!map[key]) {
-        map[key] = JSON.parse(JSON.stringify(ad));
-        map[key].ad_name = key;
-        map[key]._campaign = ad.campaign_name;
+    const result = {};
+    for (const ad of rawAds) {
+      if (parseFloat(ad.spend||0) <= 0) continue;
+      const type = classifyAdType(ad.campaign_name, clientIdx);
+      if (type === '__SKIP__') continue;
+      const key = type + '||' + normalizeAdName(ad.ad_name);
+      if (!result[type]) result[type] = [];
+      const existing = result[type].find(x => x._key === key);
+      if (!existing) {
+        const copy = JSON.parse(JSON.stringify(ad));
+        copy._key = key;
+        copy.ad_name = normalizeAdName(ad.ad_name);
+        copy._campaign = ad.campaign_name;
+        copy._type = type;
+        result[type].push(copy);
       } else {
-        const base = map[key];
-        // If new ad's campaign contains ASC, prefer it over existing campaign
-        const newCamp = (ad.campaign_name||'').toUpperCase();
-        const baseCamp = (base._campaign||'').toUpperCase();
-        if (newCamp.includes('ASC') && !baseCamp.includes('ASC')) {
-          base._campaign = ad.campaign_name;
-        }
-        base.spend = String(parseFloat(base.spend||0) + parseFloat(ad.spend||0));
-        base.impressions = String(parseInt(base.impressions||0) + parseInt(ad.impressions||0));
-        base.clicks = String(parseInt(base.clicks||0) + parseInt(ad.clicks||0));
+        existing.spend = String(parseFloat(existing.spend||0) + parseFloat(ad.spend||0));
+        existing.impressions = String(parseInt(existing.impressions||0) + parseInt(ad.impressions||0));
+        existing.clicks = String(parseInt(existing.clicks||0) + parseInt(ad.clicks||0));
         const mergeArr = (field) => {
           if (!ad[field]) return;
-          if (!base[field]) { base[field] = JSON.parse(JSON.stringify(ad[field])); return; }
+          if (!existing[field]) { existing[field] = JSON.parse(JSON.stringify(ad[field])); return; }
           for (const item of ad[field]) {
-            const ex = base[field].find(x => x.action_type === item.action_type);
+            const ex = existing[field].find(x => x.action_type === item.action_type);
             if (ex) ex.value = String(parseFloat(ex.value||0) + parseFloat(item.value||0));
-            else base[field].push(JSON.parse(JSON.stringify(item)));
+            else existing[field].push(JSON.parse(JSON.stringify(item)));
           }
         };
         mergeArr('actions'); mergeArr('action_values'); mergeArr('outbound_clicks');
-        const imp = parseInt(base.impressions||0), clk = parseInt(base.clicks||0);
-        base.ctr = imp > 0 ? String((clk/imp*100).toFixed(4)) : '0';
-        const spend = parseFloat(base.spend||0);
-        base.cost_per_action_type = [];
-        if (base.actions) for (const a of base.actions) {
+        const imp = parseInt(existing.impressions||0), clk = parseInt(existing.clicks||0);
+        existing.ctr = imp > 0 ? String((clk/imp*100).toFixed(4)) : '0';
+        const spend = parseFloat(existing.spend||0);
+        existing.cost_per_action_type = [];
+        if (existing.actions) for (const a of existing.actions) {
           const v = parseFloat(a.value||0);
-          if (v > 0 && spend > 0) base.cost_per_action_type.push({action_type:a.action_type, value:String((spend/v).toFixed(2))});
+          if (v > 0 && spend > 0) existing.cost_per_action_type.push({action_type:a.action_type, value:String((spend/v).toFixed(2))});
         }
       }
-    }
-    const result = {};
-    for (const [name, ad] of Object.entries(map)) {
-      const campName = ad._campaign || ad.campaign_name || '';
-      const type = classifyAdType(campName, clientIdx);
-      if (parseFloat(ad.spend||0) > 100) console.log('[debug] client='+clientIdx+' camp="'+campName+'" type='+type+' spend='+ad.spend);
-      if (type === '__SKIP__') continue;
-      if (!result[type]) result[type] = [];
-      result[type].push(ad);
     }
     for (const g of Object.values(result)) g.sort((a,b) => parseFloat(b.spend||0)-parseFloat(a.spend||0));
     return result;
