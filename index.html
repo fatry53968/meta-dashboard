@@ -566,97 +566,70 @@ async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYester
     </tr>`;
   }
 
-  let detailHtml = '';
+  // ── Flat table: all ads across all types, sorted by spend ──
+  const allAdsFlat = [];
   for (const typeName of allTypes) {
     const adsT = groupsT[typeName]||[];
     const adsY = groupsY[typeName]||[];
-    const color = typeColor[typeName]||'#546e7a';
     const allNames = [...new Set([...adsT.map(a=>a.ad_name),...adsY.map(a=>a.ad_name)])];
     const maxSpend = Math.max(...adsT.map(a=>parseFloat(a.spend||0)),1);
-    let adRows = '';
     for (const name of allNames) {
       const adT = adsT.find(a=>a.ad_name===name);
       const adY = adsY.find(a=>a.ad_name===name);
-      const spendT=parseFloat(adT?.spend||0), spendY=parseFloat(adY?.spend||0);
-      const purT=adT?getAdVal(adT,'purchase'):0, purY=adY?getAdVal(adY,'purchase'):0;
-      const cartT=adT?getAdVal(adT,'add_to_cart'):0, cartY=adY?getAdVal(adY,'add_to_cart'):0;
-      const cpaT=adT?getAdCPA(adT,'purchase'):0, cpaY=adY?getAdCPA(adY,'purchase'):0;
-      const roasT=spendT>0?(adT?getAdACV(adT,'purchase'):0)/spendT:0;
-      const roasY=spendY>0?(adY?getAdACV(adY,'purchase'):0)/spendY:0;
-      const ctrT=parseFloat(adT?.ctr||0), ctrY=parseFloat(adY?.ctr||0);
-      const rec=adT?recommendAd(adT,maxSpend):{badge:'rec-watch',label:'已停投',reason:'昨天無花費'};
-      const barW=Math.round(spendT/maxSpend*50);
-      const dispName=name.length>35?name.slice(0,35)+'…':name;
-      adRows += `<tr>
-        <td style="padding:8px 12px"><div class="ad-name" title="${name.replace(/</g,'&lt;')}">${dispName}</div></td>
-        <td style="padding:8px 12px;text-align:right">${row2(spendT>0?'NT$'+Math.round(spendT).toLocaleString()+`<div class="spend-bar-wrap"><div class="spend-bar" style="width:${barW}px"></div></div>`:'-',spendY>0?'NT$'+Math.round(spendY).toLocaleString():'-')}</td>
-        <td style="padding:8px 12px;text-align:right">${row2(ctrT>0?ctrT.toFixed(2)+'%':'-',ctrY>0?ctrY.toFixed(2)+'%':'-')}</td>
-        <td style="padding:8px 12px;text-align:right">${row2(cartT>0?cartT:'-',cartY>0?cartY:'-')}</td>
-        <td style="padding:8px 12px;text-align:right">${row2(purT>0?purT:'-',purY>0?purY:'-')}</td>
-        <td style="padding:8px 12px;text-align:right">${row2(cpaT>0?'NT$'+Math.round(cpaT).toLocaleString():'-',cpaY>0?'NT$'+Math.round(cpaY).toLocaleString():'-')}</td>
-        <td style="padding:8px 12px;text-align:right;font-weight:600">${row2('<span style="color:'+rc(roasT)+'">'+fX(roasT)+'</span>','<span style="color:'+rc(roasY)+'">'+fX(roasY)+'</span>')}</td>
-        <td style="padding:8px 12px"><span class="rec-badge ${rec.badge}">${rec.label}</span></td>
-        <td style="padding:8px 12px;font-size:11px;color:var(--text2);max-width:160px;line-height:1.4">${rec.reason}</td>
-      </tr>`;
+      allAdsFlat.push({ name, typeName, adT, adY, maxSpend,
+        spendT: parseFloat(adT?.spend||0) });
     }
-    detailHtml += `
-    <div class="creative-type-block" style="margin-bottom:12px">
-      <div class="creative-type-header" style="background:${color}18;color:${color};cursor:pointer;user-select:none" onclick="const d=this.nextElementSibling;d.style.display=d.style.display==='none'?'block':'none'">
-        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:6px"></span>
-        ${typeName} <span style="font-weight:400;font-size:12px;margin-left:6px">${allNames.length} 組素材</span>
-        <span style="margin-left:auto;font-size:12px">▼ 展開素材明細</span>
-      </div>
-      <div style="display:none">
-        <table class="creative-table">
-          <thead><tr>
-            <th>廣告名稱</th>
-            <th style="text-align:right">花費<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
-            <th style="text-align:right">CTR<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
-            <th style="text-align:right">加購<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
-            <th style="text-align:right">購買<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
-            <th style="text-align:right">CPA<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
-            <th style="text-align:right">ROAS<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
-            <th>建議</th><th>原因</th>
-          </tr></thead>
-          <tbody>${adRows}</tbody>
-        </table>
-      </div>
-    </div>`;
+  }
+  allAdsFlat.sort((a,b) => b.spendT - a.spendT);
+  const globalMaxSpend = Math.max(...allAdsFlat.map(x=>x.spendT), 1);
+
+  let flatRows = '';
+  for (const {name, typeName, adT, adY} of allAdsFlat) {
+    const color = typeColor[typeName]||'#546e7a';
+    const spendT=parseFloat(adT?.spend||0), spendY=parseFloat(adY?.spend||0);
+    const purT=adT?getAdVal(adT,'purchase'):0, purY=adY?getAdVal(adY,'purchase'):0;
+    const cartT=adT?getAdVal(adT,'add_to_cart'):0, cartY=adY?getAdVal(adY,'add_to_cart'):0;
+    const cpaT=adT?getAdCPA(adT,'purchase'):0, cpaY=adY?getAdCPA(adY,'purchase'):0;
+    const roasT=spendT>0?(adT?getAdACV(adT,'purchase'):0)/spendT:0;
+    const roasY=spendY>0?(adY?getAdACV(adY,'purchase'):0)/spendY:0;
+    const ctrT=parseFloat(adT?.ctr||0), ctrY=parseFloat(adY?.ctr||0);
+    const rec=adT?recommendAd(adT,globalMaxSpend):{badge:'rec-watch',label:'已停投',reason:'昨天無花費'};
+    const barW=Math.round(spendT/globalMaxSpend*50);
+    const dispName=name.length>35?name.slice(0,35)+'…':name;
+    flatRows += `<tr>
+      <td style="padding:8px 12px">
+        <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};margin-right:5px;vertical-align:middle"></span>
+        <span style="font-size:10px;color:${color};font-weight:500">${typeName}</span>
+        <div class="ad-name" style="margin-top:2px" title="${name.replace(/</g,'&lt;')}">${dispName}</div>
+      </td>
+      <td style="padding:8px 12px;text-align:right">${row2(spendT>0?'NT$'+Math.round(spendT).toLocaleString()+`<div class="spend-bar-wrap"><div class="spend-bar" style="width:${barW}px"></div></div>`:'-',spendY>0?'NT$'+Math.round(spendY).toLocaleString():'-')}</td>
+      <td style="padding:8px 12px;text-align:right">${row2(ctrT>0?ctrT.toFixed(2)+'%':'-',ctrY>0?ctrY.toFixed(2)+'%':'-')}</td>
+      <td style="padding:8px 12px;text-align:right">${row2(cartT>0?cartT:'-',cartY>0?cartY:'-')}</td>
+      <td style="padding:8px 12px;text-align:right">${row2(purT>0?purT:'-',purY>0?purY:'-')}</td>
+      <td style="padding:8px 12px;text-align:right">${row2(cpaT>0?'NT$'+Math.round(cpaT).toLocaleString():'-',cpaY>0?'NT$'+Math.round(cpaY).toLocaleString():'-')}</td>
+      <td style="padding:8px 12px;text-align:right;font-weight:600">${row2('<span style="color:'+rc(roasT)+'">'+fX(roasT)+'</span>','<span style="color:'+rc(roasY)+'">'+fX(roasY)+'</span>')}</td>
+      <td style="padding:8px 12px"><span class="rec-badge ${rec.badge}">${rec.label}</span></td>
+      <td style="padding:8px 12px;font-size:11px;color:var(--text2);max-width:160px;line-height:1.4">${rec.reason}</td>
+    </tr>`;
   }
 
-  const elSummary = document.getElementById(`creative-summary-${clientIdx}`);
-  const elDetail = document.getElementById(`creative-${clientIdx}`);
-  if (elSummary) elSummary.innerHTML = `
-    <div style="font-size:11px;color:var(--text3);margin-bottom:6px">上排 = 昨天（${d1}）｜下排灰色 = 前天（${d2}）</div>
-    <div class="metrics-table" style="margin-bottom:16px">
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead><tr style="background:var(--surface2)">
-          <th style="padding:10px 14px;text-align:left;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">類型</th>
-          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">花費</th>
-          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">佔比</th>
-          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">加購</th>
-          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">購買</th>
-          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">CPA</th>
-          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">ROAS</th>
-          <th style="padding:10px 14px;text-align:center;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">ROAS變化</th>
+  if (elDetail) elDetail.innerHTML = `
+    <div style="font-size:11px;color:var(--text3);margin-bottom:6px">上排 = 昨天（${d1}）｜下排灰色 = 前天（${d2}）｜左側圓點 = 廣告類型</div>
+    <div class="metrics-table">
+      <table class="creative-table">
+        <thead><tr>
+          <th>廣告名稱</th>
+          <th style="text-align:right">花費<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
+          <th style="text-align:right">CTR<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
+          <th style="text-align:right">加購<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
+          <th style="text-align:right">購買<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
+          <th style="text-align:right">CPA<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
+          <th style="text-align:right">ROAS<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
+          <th>建議</th><th>原因</th>
         </tr></thead>
-        <tbody style="background:var(--surface)">
-          ${summaryRows}
-          <tr style="background:var(--surface2);font-weight:600;border-top:1.5px solid var(--border2)">
-            <td style="padding:10px 14px">總計</td>
-            <td style="padding:10px 14px;text-align:right">${row2(fM(grandT.spend),fM(grandY.spend))}</td>
-            <td style="padding:10px 14px;text-align:right">${row2('100%','100%')}</td>
-            <td style="padding:10px 14px;text-align:right">${row2(fN(grandT.cart),fN(grandY.cart))}</td>
-            <td style="padding:10px 14px;text-align:right">${row2(fN(grandT.purchase),fN(grandY.purchase))}</td>
-            <td style="padding:10px 14px;text-align:right">${row2(fM(grandTCpa),fM(grandYCpa))}</td>
-            <td style="padding:10px 14px;text-align:right">${row2('<span style="color:'+rc(grandTRoas)+'">'+fX(grandTRoas)+'</span>','<span style="color:'+rc(grandYRoas)+'">'+fX(grandYRoas)+'</span>')}</td>
-            <td style="padding:10px 14px;text-align:center">${chg(grandTRoas,grandYRoas,false)}</td>
-          </tr>
-        </tbody>
+        <tbody>${flatRows}</tbody>
       </table>
-    </div>
-    <div style="font-size:12px;color:var(--text3);margin-bottom:10px">▼ 點擊各類型可展開素材明細（同素材跨廣告組合已合併）</div>`;
-  if (elDetail) elDetail.innerHTML = `${detailHtml}`;
+    </div>`;
 }
 
 
