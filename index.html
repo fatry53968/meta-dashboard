@@ -442,133 +442,180 @@ function recommendAd(ad, maxSpend) {
   return { badge: 'rec-watch', label: '持續觀察', reason: '數據尚在學習期，維持預算繼續觀察' };
 }
 
-async function buildCreativeAnalysis(clientIdx, containerId) {
+async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYesterday) {
   const el = document.getElementById(containerId);
-  el.innerHTML = '<div class="creative-loading">⏳ 載入廣告分類數據...</div>';
-  const client = CLIENTS[clientIdx];
-  const { today } = getDateRange();
-  let allAds = [];
-  for (const acc of client.accounts) {
-    try {
-      const ads = await fetchAdInsights(acc, today);
-      allAds = allAds.concat(ads);
-    } catch(e) {
-      el.innerHTML = `<div class="creative-loading" style="color:var(--red)">⚠️ API 錯誤（帳號 ${acc}）：${e.message}</div>`;
-      return;
+
+  function prepAds(rawAds) {
+    if (!rawAds || rawAds.length === 0) return {};
+    const filtered = rawAds.filter(a => parseFloat(a.spend||0) > 0);
+    const map = {};
+    for (const ad of filtered) {
+      const key = normalizeAdName(ad.ad_name);
+      if (!map[key]) {
+        map[key] = JSON.parse(JSON.stringify(ad));
+        map[key].ad_name = key;
+        map[key]._campaign = ad.campaign_name;
+      } else {
+        const base = map[key];
+        base.spend = String(parseFloat(base.spend||0) + parseFloat(ad.spend||0));
+        base.impressions = String(parseInt(base.impressions||0) + parseInt(ad.impressions||0));
+        base.clicks = String(parseInt(base.clicks||0) + parseInt(ad.clicks||0));
+        const mergeArr = (field) => {
+          if (!ad[field]) return;
+          if (!base[field]) { base[field] = JSON.parse(JSON.stringify(ad[field])); return; }
+          for (const item of ad[field]) {
+            const ex = base[field].find(x => x.action_type === item.action_type);
+            if (ex) ex.value = String(parseFloat(ex.value||0) + parseFloat(item.value||0));
+            else base[field].push(JSON.parse(JSON.stringify(item)));
+          }
+        };
+        mergeArr('actions'); mergeArr('action_values'); mergeArr('outbound_clicks');
+        const imp = parseInt(base.impressions||0), clk = parseInt(base.clicks||0);
+        base.ctr = imp > 0 ? String((clk/imp*100).toFixed(4)) : '0';
+        const spend = parseFloat(base.spend||0);
+        base.cost_per_action_type = [];
+        if (base.actions) for (const a of base.actions) {
+          const v = parseFloat(a.value||0);
+          if (v > 0 && spend > 0) base.cost_per_action_type.push({action_type:a.action_type, value:String((spend/v).toFixed(2))});
+        }
+      }
     }
+    const result = {};
+    for (const [name, ad] of Object.entries(map)) {
+      const type = classifyAdType(ad._campaign || ad.campaign_name, clientIdx);
+      if (type === '__SKIP__') continue;
+      if (!result[type]) result[type] = [];
+      result[type].push(ad);
+    }
+    for (const g of Object.values(result)) g.sort((a,b) => parseFloat(b.spend||0)-parseFloat(a.spend||0));
+    return result;
   }
 
-  allAds = allAds.filter(a => parseFloat(a.spend||0) > 0);
-  allAds = mergeAdsByName(allAds);
-  if (allAds.length === 0) {
-    el.innerHTML = '<div class="creative-loading" style="color:var(--text3)">昨天無花費廣告</div>';
-    return;
-  }
+  const groupsT = prepAds(adsToday);
+  const groupsY = prepAds(adsYesterday);
 
-  // 定義類型順序（依客戶）
   const typeOrder0 = ['流量/互動/觀看','ASC','KOL','台灣興趣','海外興趣','類似','台灣RT','海外RT','其他'];
   const typeOrder1 = ['流量/互動/觀看','ASC','KOL','台灣興趣','海外興趣','類似','台灣RT','海外RT','興趣','RT','其他'];
   const typeOrder = clientIdx === 0 ? typeOrder0 : typeOrder1;
 
-  // 分類（排除 __SKIP__）
-  const groups = {};
-  for (const t of typeOrder) groups[t] = [];
-  const grandTotalSpend_all = allAds.reduce((s,a)=>s+parseFloat(a.spend||0),0);
-
-  for (const ad of allAds) {
-    const type = classifyAdType(ad.campaign_name, clientIdx);
-    if (type === '__SKIP__') continue;
-    if (!groups[type]) groups[type] = [];
-    groups[type].push(ad);
-  }
-
-  // 計算每類型統計
-  const grandSpend = Object.values(groups).flat().reduce((s,a)=>s+parseFloat(a.spend||0),0);
-  const grandPurchase = Object.values(groups).flat().reduce((s,a)=>s+getAdVal(a,'purchase'),0);
-  const grandACV = Object.values(groups).flat().reduce((s,a)=>s+getAdACV(a,'purchase'),0);
-  const grandCart = Object.values(groups).flat().reduce((s,a)=>s+getAdVal(a,'add_to_cart'),0);
-
-  // 類型顏色
   const typeColor = {
     'ASC':'#1565c0','KOL':'#6a1b9a','台灣興趣':'#e65100','海外興趣':'#bf360c',
     '類似':'#2e7d32','台灣RT':'#c62828','海外RT':'#ad1457','RT':'#c62828',
     '興趣':'#e65100','流量/互動/觀看':'#37474f','其他':'#546e7a'
   };
 
-  // ── 總覽表格 ──
-  let summaryRows = '';
-  for (const typeName of typeOrder) {
-    const ads = groups[typeName];
-    if (!ads || ads.length === 0) continue;
+  function sumGroup(groups, type) {
+    const ads = groups[type] || [];
     const spend = ads.reduce((s,a)=>s+parseFloat(a.spend||0),0);
     const purchase = ads.reduce((s,a)=>s+getAdVal(a,'purchase'),0);
     const acv = ads.reduce((s,a)=>s+getAdACV(a,'purchase'),0);
     const cart = ads.reduce((s,a)=>s+getAdVal(a,'add_to_cart'),0);
-    const cpa = purchase > 0 ? spend/purchase : 0;
-    const roas = spend > 0 ? acv/spend : 0;
-    const pct = grandSpend > 0 ? spend/grandSpend*100 : 0;
-    const roasColor = roas >= 3 ? 'var(--green)' : roas >= 2 ? 'var(--amber)' : roas > 0 ? 'var(--red)' : 'var(--text3)';
+    return { spend, purchase, acv, cart,
+      cpa: purchase>0 ? spend/purchase : 0,
+      roas: spend>0 ? acv/spend : 0 };
+  }
+
+  const allTypes = typeOrder.filter(t => (groupsT[t]&&groupsT[t].length)||(groupsY[t]&&groupsY[t].length));
+  if (allTypes.length === 0) {
+    el.innerHTML = '<div class="creative-loading" style="color:var(--text3)">無廣告資料（請確認 Token 有 ads_read 權限）</div>';
+    return;
+  }
+
+  const grandT = {spend:0,purchase:0,acv:0,cart:0};
+  const grandY = {spend:0,purchase:0,acv:0,cart:0};
+  for (const t of allTypes) {
+    const st=sumGroup(groupsT,t), sy=sumGroup(groupsY,t);
+    grandT.spend+=st.spend; grandT.purchase+=st.purchase; grandT.acv+=st.acv; grandT.cart+=st.cart;
+    grandY.spend+=sy.spend; grandY.purchase+=sy.purchase; grandY.acv+=sy.acv; grandY.cart+=sy.cart;
+  }
+  const grandTRoas = grandT.spend>0?grandT.acv/grandT.spend:0;
+  const grandYRoas = grandY.spend>0?grandY.acv/grandY.spend:0;
+  const grandTCpa = grandT.purchase>0?grandT.spend/grandT.purchase:0;
+  const grandYCpa = grandY.purchase>0?grandY.spend/grandY.purchase:0;
+
+  function rc(r){ return r>=3?'var(--green)':r>=2?'var(--amber)':r>0?'var(--red)':'var(--text3)'; }
+  function fN(n){ return n>0?Math.round(n).toLocaleString():'-'; }
+  function fM(n){ return n>0?'NT$'+Math.round(n).toLocaleString():'-'; }
+  function fX(n){ return n>0?n.toFixed(2)+'x':'-'; }
+  function fP(n){ return n>0?n.toFixed(1)+'%':'-'; }
+  function chg(a,b,lb){
+    if(!b||b===0) return '';
+    const p=(a-b)/b*100, good=lb?p<0:p>0;
+    const cls=Math.abs(p)<1?'neu':good?'up':'down';
+    return `<span class="change-badge ${cls}">${p>0?'+':''}${p.toFixed(1)}%</span>`;
+  }
+  function row2(top,bot){ return `${top}<br><small style="color:var(--text3)">${bot}</small>`; }
+
+  const {today:d1,yesterday:d2} = getDateRange();
+
+  let summaryRows = '';
+  for (const typeName of allTypes) {
+    const st=sumGroup(groupsT,typeName), sy=sumGroup(groupsY,typeName);
     const color = typeColor[typeName]||'#546e7a';
+    const pctT = grandT.spend>0?st.spend/grandT.spend*100:0;
+    const pctY = grandY.spend>0?sy.spend/grandY.spend*100:0;
     summaryRows += `<tr>
-      <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:6px"></span><b>${typeName}</b></td>
-      <td style="text-align:right">NT$${Math.round(spend).toLocaleString()}</td>
-      <td style="text-align:right">${pct.toFixed(1)}%</td>
-      <td style="text-align:right">${cart > 0 ? cart : '-'}</td>
-      <td style="text-align:right">${purchase > 0 ? purchase : '-'}</td>
-      <td style="text-align:right">${cpa > 0 ? 'NT$'+Math.round(cpa).toLocaleString() : '-'}</td>
-      <td style="text-align:right;font-weight:600;color:${roasColor}">${roas > 0 ? roas.toFixed(2)+'x' : '-'}</td>
+      <td style="padding:9px 14px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:6px"></span><b>${typeName}</b></td>
+      <td style="padding:9px 14px;text-align:right">${row2(fM(st.spend),fM(sy.spend))}</td>
+      <td style="padding:9px 14px;text-align:right">${row2(fP(pctT),fP(pctY))}</td>
+      <td style="padding:9px 14px;text-align:right">${row2(fN(st.cart),fN(sy.cart))}</td>
+      <td style="padding:9px 14px;text-align:right">${row2(fN(st.purchase),fN(sy.purchase))}</td>
+      <td style="padding:9px 14px;text-align:right">${row2(fM(st.cpa),fM(sy.cpa))}</td>
+      <td style="padding:9px 14px;text-align:right;font-weight:600">${row2('<span style="color:'+rc(st.roas)+'">'+fX(st.roas)+'</span>','<span style="color:'+rc(sy.roas)+'">'+fX(sy.roas)+'</span>')}</td>
+      <td style="padding:9px 14px;text-align:center">${chg(st.roas,sy.roas,false)}</td>
     </tr>`;
   }
 
-  const grandCpa = grandPurchase > 0 ? grandSpend/grandPurchase : 0;
-  const grandRoas = grandSpend > 0 ? grandACV/grandSpend : 0;
-
-  // ── 各類型素材明細（可展開） ──
   let detailHtml = '';
-  for (const typeName of typeOrder) {
-    const ads = groups[typeName];
-    if (!ads || ads.length === 0) continue;
+  for (const typeName of allTypes) {
+    const adsT = groupsT[typeName]||[];
+    const adsY = groupsY[typeName]||[];
     const color = typeColor[typeName]||'#546e7a';
-    const domId = `detail-${clientIdx}-${typeName.replace(/[^a-zA-Z0-9]/g,'_')}`;
-    const maxSpend = Math.max(...ads.map(a=>parseFloat(a.spend||0)));
+    const allNames = [...new Set([...adsT.map(a=>a.ad_name),...adsY.map(a=>a.ad_name)])];
+    const maxSpend = Math.max(...adsT.map(a=>parseFloat(a.spend||0)),1);
     let adRows = '';
-    for (const ad of [...ads].sort((a,b)=>parseFloat(b.spend||0)-parseFloat(a.spend||0))) {
-      const spend = parseFloat(ad.spend||0);
-      const ctr = parseFloat(ad.ctr||0);
-      const cart = getAdVal(ad,'add_to_cart');
-      const purchase = getAdVal(ad,'purchase');
-      const cpa = getAdCPA(ad,'purchase');
-      const roas = spend > 0 ? getAdACV(ad,'purchase')/spend : 0;
-      const rec = recommendAd(ad, maxSpend);
-      const barW = Math.round(spend/maxSpend*50);
-      const adName = (ad.ad_name||'未命名').replace(/</g,'&lt;');
+    for (const name of allNames) {
+      const adT = adsT.find(a=>a.ad_name===name);
+      const adY = adsY.find(a=>a.ad_name===name);
+      const spendT=parseFloat(adT?.spend||0), spendY=parseFloat(adY?.spend||0);
+      const purT=adT?getAdVal(adT,'purchase'):0, purY=adY?getAdVal(adY,'purchase'):0;
+      const cartT=adT?getAdVal(adT,'add_to_cart'):0, cartY=adY?getAdVal(adY,'add_to_cart'):0;
+      const cpaT=adT?getAdCPA(adT,'purchase'):0, cpaY=adY?getAdCPA(adY,'purchase'):0;
+      const roasT=spendT>0?(adT?getAdACV(adT,'purchase'):0)/spendT:0;
+      const roasY=spendY>0?(adY?getAdACV(adY,'purchase'):0)/spendY:0;
+      const ctrT=parseFloat(adT?.ctr||0), ctrY=parseFloat(adY?.ctr||0);
+      const rec=adT?recommendAd(adT,maxSpend):{badge:'rec-watch',label:'已停投',reason:'昨天無花費'};
+      const barW=Math.round(spendT/maxSpend*50);
+      const dispName=name.length>35?name.slice(0,35)+'…':name;
       adRows += `<tr>
-        <td><div class="ad-name" title="${adName}">${adName.length>30?adName.slice(0,30)+'…':adName}</div>
-            <div style="font-size:10px;color:var(--text3)">${(ad.adset_name||'').slice(0,35)}</div></td>
-        <td style="text-align:right">NT$${Math.round(spend).toLocaleString()}
-          <div class="spend-bar-wrap"><div class="spend-bar" style="width:${barW}px"></div></div></td>
-        <td style="text-align:right">${ctr.toFixed(2)}%</td>
-        <td style="text-align:right">${cart>0?cart:'-'}</td>
-        <td style="text-align:right">${purchase>0?purchase:'-'}</td>
-        <td style="text-align:right">${cpa>0?'NT$'+Math.round(cpa).toLocaleString():'-'}</td>
-        <td style="text-align:right;font-weight:600;color:${roas>=3?'var(--green)':roas>=2?'var(--amber)':roas>0?'var(--red)':'var(--text3)'}">${roas>0?roas.toFixed(2)+'x':'-'}</td>
-        <td><span class="rec-badge ${rec.badge}">${rec.label}</span></td>
-        <td style="font-size:11px;color:var(--text2);max-width:180px;line-height:1.4">${rec.reason}</td>
+        <td style="padding:8px 12px"><div class="ad-name" title="${name.replace(/</g,'&lt;')}">${dispName}</div></td>
+        <td style="padding:8px 12px;text-align:right">${row2(spendT>0?'NT$'+Math.round(spendT).toLocaleString()+`<div class="spend-bar-wrap"><div class="spend-bar" style="width:${barW}px"></div></div>`:'-',spendY>0?'NT$'+Math.round(spendY).toLocaleString():'-')}</td>
+        <td style="padding:8px 12px;text-align:right">${row2(ctrT>0?ctrT.toFixed(2)+'%':'-',ctrY>0?ctrY.toFixed(2)+'%':'-')}</td>
+        <td style="padding:8px 12px;text-align:right">${row2(cartT>0?cartT:'-',cartY>0?cartY:'-')}</td>
+        <td style="padding:8px 12px;text-align:right">${row2(purT>0?purT:'-',purY>0?purY:'-')}</td>
+        <td style="padding:8px 12px;text-align:right">${row2(cpaT>0?'NT$'+Math.round(cpaT).toLocaleString():'-',cpaY>0?'NT$'+Math.round(cpaY).toLocaleString():'-')}</td>
+        <td style="padding:8px 12px;text-align:right;font-weight:600">${row2('<span style="color:'+rc(roasT)+'">'+fX(roasT)+'</span>','<span style="color:'+rc(roasY)+'">'+fX(roasY)+'</span>')}</td>
+        <td style="padding:8px 12px"><span class="rec-badge ${rec.badge}">${rec.label}</span></td>
+        <td style="padding:8px 12px;font-size:11px;color:var(--text2);max-width:160px;line-height:1.4">${rec.reason}</td>
       </tr>`;
     }
     detailHtml += `
     <div class="creative-type-block" style="margin-bottom:12px">
-      <div class="creative-type-header" style="background:${color}18;color:${color};cursor:pointer;user-select:none" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+      <div class="creative-type-header" style="background:${color}18;color:${color};cursor:pointer;user-select:none" onclick="const d=this.nextElementSibling;d.style.display=d.style.display==='none'?'block':'none'">
         <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:6px"></span>
-        ${typeName} <span style="font-weight:400;font-size:12px;margin-left:8px">${ads.length} 組素材</span>
+        ${typeName} <span style="font-weight:400;font-size:12px;margin-left:6px">${allNames.length} 組素材</span>
         <span style="margin-left:auto;font-size:12px">▼ 展開素材明細</span>
       </div>
-      <div id="${domId}" style="display:none">
+      <div style="display:none">
         <table class="creative-table">
           <thead><tr>
-            <th>廣告名稱</th><th style="text-align:right">花費</th><th style="text-align:right">CTR</th>
-            <th style="text-align:right">加購</th><th style="text-align:right">購買</th>
-            <th style="text-align:right">CPA</th><th style="text-align:right">ROAS</th>
+            <th>廣告名稱</th>
+            <th style="text-align:right">花費<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
+            <th style="text-align:right">CTR<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
+            <th style="text-align:right">加購<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
+            <th style="text-align:right">購買<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
+            <th style="text-align:right">CPA<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
+            <th style="text-align:right">ROAS<br><small style="font-weight:400;color:var(--text3)">昨/前</small></th>
             <th>建議</th><th>原因</th>
           </tr></thead>
           <tbody>${adRows}</tbody>
@@ -578,6 +625,7 @@ async function buildCreativeAnalysis(clientIdx, containerId) {
   }
 
   el.innerHTML = `
+    <div style="font-size:11px;color:var(--text3);margin-bottom:6px">上排 = 昨天（${d1}）｜下排灰色 = 前天（${d2}）</div>
     <div class="metrics-table" style="margin-bottom:16px">
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="background:var(--surface2)">
@@ -588,24 +636,27 @@ async function buildCreativeAnalysis(clientIdx, containerId) {
           <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">購買</th>
           <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">CPA</th>
           <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">ROAS</th>
+          <th style="padding:10px 14px;text-align:center;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">ROAS變化</th>
         </tr></thead>
         <tbody style="background:var(--surface)">
           ${summaryRows}
           <tr style="background:var(--surface2);font-weight:600;border-top:1.5px solid var(--border2)">
             <td style="padding:10px 14px">總計</td>
-            <td style="padding:10px 14px;text-align:right">NT$${Math.round(grandSpend).toLocaleString()}</td>
-            <td style="padding:10px 14px;text-align:right">100%</td>
-            <td style="padding:10px 14px;text-align:right">${grandCart>0?grandCart:'-'}</td>
-            <td style="padding:10px 14px;text-align:right">${grandPurchase>0?grandPurchase:'-'}</td>
-            <td style="padding:10px 14px;text-align:right">${grandCpa>0?'NT$'+Math.round(grandCpa).toLocaleString():'-'}</td>
-            <td style="padding:10px 14px;text-align:right;color:${grandRoas>=3?'var(--green)':grandRoas>=2?'var(--amber)':grandRoas>0?'var(--red)':'var(--text3)'}">${grandRoas>0?grandRoas.toFixed(2)+'x':'-'}</td>
+            <td style="padding:10px 14px;text-align:right">${row2(fM(grandT.spend),fM(grandY.spend))}</td>
+            <td style="padding:10px 14px;text-align:right">${row2('100%','100%')}</td>
+            <td style="padding:10px 14px;text-align:right">${row2(fN(grandT.cart),fN(grandY.cart))}</td>
+            <td style="padding:10px 14px;text-align:right">${row2(fN(grandT.purchase),fN(grandY.purchase))}</td>
+            <td style="padding:10px 14px;text-align:right">${row2(fM(grandTCpa),fM(grandYCpa))}</td>
+            <td style="padding:10px 14px;text-align:right">${row2('<span style="color:'+rc(grandTRoas)+'">'+fX(grandTRoas)+'</span>','<span style="color:'+rc(grandYRoas)+'">'+fX(grandYRoas)+'</span>')}</td>
+            <td style="padding:10px 14px;text-align:center">${chg(grandTRoas,grandYRoas,false)}</td>
           </tr>
         </tbody>
       </table>
     </div>
-    <div style="font-size:12px;color:var(--text3);margin-bottom:12px">點擊各類型列可展開該分類下的素材明細與建議 ↓</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:10px">▼ 點擊各類型可展開素材明細（同素材跨廣告組合已合併）</div>
     ${detailHtml}`;
 }
+
 
 async function fetchInsights(accountId, dateStart, dateEnd) {
   const url = `https://graph.facebook.com/v19.0/act_${accountId}/insights?fields=${FIELDS}&time_range={"since":"${dateStart}","until":"${dateEnd}"}&level=account&access_token=${TOKEN}`;
@@ -618,18 +669,24 @@ async function fetchInsights(accountId, dateStart, dateEnd) {
 async function fetchClientData(clientIndex) {
   const client = CLIENTS[clientIndex];
   const { today, yesterday } = getDateRange();
-  const results = { today: [], yesterday: [] };
+  const results = { today: [], yesterday: [], adsToday: [], adsYesterday: [] };
   for (const acc of client.accounts) {
-    const [t, y] = await Promise.all([
+    const [t, y, at, ay] = await Promise.all([
       fetchInsights(acc, today, today).catch(()=>null),
-      fetchInsights(acc, yesterday, yesterday).catch(()=>null)
+      fetchInsights(acc, yesterday, yesterday).catch(()=>null),
+      fetchAdInsights(acc, today).catch(()=>[]),
+      fetchAdInsights(acc, yesterday).catch(()=>[])
     ]);
     if (t) results.today.push(t);
     if (y) results.yesterday.push(y);
+    results.adsToday = results.adsToday.concat(at||[]);
+    results.adsYesterday = results.adsYesterday.concat(ay||[]);
   }
   return {
     today: mergeInsights(results.today),
-    yesterday: mergeInsights(results.yesterday)
+    yesterday: mergeInsights(results.yesterday),
+    adsToday: results.adsToday,
+    adsYesterday: results.adsYesterday
   };
 }
 
@@ -908,7 +965,7 @@ function buildAIAnalysis(clientName, t, y, containerId) {
     </div>`;
 }
 
-function renderClient(idx, todayData, yesterdayData) {
+function renderClient(idx, todayData, yesterdayData, adsToday, adsYesterday) {
   const content = document.getElementById(`content-${idx}`);
   const { today, yesterday } = getDateRange();
 
@@ -919,6 +976,8 @@ function renderClient(idx, todayData, yesterdayData) {
     <div style="font-size:12px;color:var(--text3);margin-bottom:12px">
       昨天 ${today}（主）｜前天 ${yesterday}
     </div>
+    <div class="section-title">廣告類型分組總覽</div>
+    <div id="creative-${idx}"><div class="creative-loading">載入中...</div></div>
     ${kpiHtml}
     <div class="section-title">詳細指標對比</div>
     ${tableHtml}
@@ -931,14 +990,10 @@ function renderClient(idx, todayData, yesterdayData) {
       <div class="ai-content" id="ai-content-${idx}">
         <div class="ai-loading">準備分析...</div>
       </div>
-    </div>
-    <div class="section-title" style="margin-top:24px">📋 廣告素材逐條建議（依類型分組）</div>
-    <div class="creative-section" id="creative-${idx}">
-      <div class="creative-loading">載入中...</div>
     </div>`;
 
   buildAIAnalysis(CLIENTS[idx].name, todayData, yesterdayData, `ai-content-${idx}`);
-  buildCreativeAnalysis(idx, `creative-${idx}`);
+  buildCreativeAnalysis(idx, `creative-${idx}`, adsToday, adsYesterday);
 }
 
 async function loadClient(idx) {
@@ -950,10 +1005,11 @@ async function loadClient(idx) {
   errEl.innerHTML = '';
 
   try {
-    const { today, yesterday } = await fetchClientData(idx);
+    const data = await fetchClientData(idx);
+    const { today, yesterday } = data;
     dot.className = 'status-dot ok';
     txt.textContent = `資料已更新`;
-    renderClient(idx, today, yesterday);
+    renderClient(idx, today, yesterday, data.adsToday||[], data.adsYesterday||[]);
   } catch(e) {
     dot.className = 'status-dot error';
     txt.textContent = '資料載入失敗';
