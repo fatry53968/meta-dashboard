@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>META 廣告數據儀表板</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #f7f6f3;
+    --surface: #ffffff;
+    --surface2: #f0eeea;
+    --border: rgba(0,0,0,0.1);
+    --border2: rgba(0,0,0,0.18);
+    --text: #1a1a1a;
+    --text2: #555;
+    --text3: #888;
+    --blue: #1877f2;
+    --green: #2e7d32;
+    --red: #c62828;
+    --amber: #e65100;
+    --green-bg: #e8f5e9;
+    --red-bg: #ffebee;
+    --amber-bg: #fff3e0;
+    --blue-bg: #e3f2fd;
+    --radius: 10px;
+    --radius-sm: 6px;
+  }
+  body { font-family: -apple-system, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+  
+  .top-bar { background: #1877f2; padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .top-bar h1 { color: #fff; font-size: 17px; font-weight: 600; }
+  .top-bar .date-badge { background: rgba(255,255,255,0.2); color: #fff; font-size: 12px; padding: 4px 12px; border-radius: 20px; }
+  .refresh-btn { background: rgba(255,255,255,0.2); color: #fff; border: none; padding: 6px 14px; border-radius: var(--radius-sm); cursor: pointer; font-size: 13px; }
+  .refresh-btn:hover { background: rgba(255,255,255,0.3); }
+
+  .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+
+  .client-tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+  .client-tab { padding: 10px 20px; border: 0.5px solid var(--border2); border-radius: var(--radius); cursor: pointer; background: var(--surface); font-size: 14px; font-weight: 500; color: var(--text2); transition: all 0.15s; }
+  .client-tab.active { background: #1877f2; color: #fff; border-color: #1877f2; }
+  .client-tab:hover:not(.active) { background: var(--surface2); }
+
+  .client-panel { display: none; }
+  .client-panel.active { display: block; }
+
+  .status-bar { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 12px 16px; margin-bottom: 16px; font-size: 13px; color: var(--text2); display: flex; align-items: center; gap: 8px; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; flex-shrink: 0; }
+  .status-dot.loading { background: #ffa000; animation: pulse 1s infinite; }
+  .status-dot.ok { background: #2e7d32; }
+  .status-dot.error { background: #c62828; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  .error-msg { background: var(--red-bg); border: 0.5px solid #ef9a9a; border-radius: var(--radius); padding: 14px 16px; color: var(--red); font-size: 13px; margin-bottom: 16px; }
+
+  .day-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  .day-card { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 16px; }
+  .day-card h3 { font-size: 13px; font-weight: 500; color: var(--text3); margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+  .day-dot-today { width: 8px; height: 8px; border-radius: 50%; background: #1877f2; }
+  .day-dot-yest { width: 8px; height: 8px; border-radius: 50%; background: #aaa; }
+
+  .kpi-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-bottom: 12px; }
+  .kpi { background: var(--surface2); border-radius: var(--radius-sm); padding: 10px 12px; }
+  .kpi-label { font-size: 11px; color: var(--text3); margin-bottom: 4px; }
+  .kpi-value { font-size: 18px; font-weight: 600; color: var(--text); }
+  .kpi-sub { font-size: 11px; color: var(--text3); margin-top: 2px; }
+
+  .section-title { font-size: 12px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; margin: 20px 0 10px; }
+
+  .metrics-table { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 20px; }
+  .metrics-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .metrics-table th { background: var(--surface2); padding: 10px 14px; text-align: left; font-weight: 500; color: var(--text2); font-size: 12px; border-bottom: 0.5px solid var(--border); }
+  .metrics-table td { padding: 9px 14px; border-bottom: 0.5px solid var(--border); color: var(--text); vertical-align: middle; }
+  .metrics-table tr:last-child td { border-bottom: none; }
+  .metrics-table tr:hover td { background: var(--surface2); }
+  .change-badge { display: inline-block; padding: 2px 7px; border-radius: 20px; font-size: 11px; font-weight: 500; }
+  .up { background: var(--green-bg); color: var(--green); }
+  .down { background: var(--red-bg); color: var(--red); }
+  .neu { background: var(--surface2); color: var(--text3); }
+
+  .ai-box { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 20px; }
+  .ai-box-header { background: linear-gradient(135deg, #1877f2 0%, #0d47a1 100%); padding: 14px 16px; display: flex; align-items: center; gap: 10px; }
+  .ai-box-header h3 { color: #fff; font-size: 14px; font-weight: 600; }
+  .ai-icon { width: 28px; height: 28px; background: rgba(255,255,255,0.2); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+  .ai-content { padding: 16px; }
+  .ai-loading { color: var(--text2); font-size: 13px; text-align: center; padding: 20px; }
+  .insight-item { margin-bottom: 16px; padding-bottom: 16px; border-bottom: 0.5px solid var(--border); }
+  .insight-item:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
+  .insight-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+  .insight-body { font-size: 13px; color: var(--text2); line-height: 1.6; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 500; margin-right: 4px; }
+  .tag-asc { background: var(--blue-bg); color: #1565c0; }
+  .tag-rt { background: #f3e5f5; color: #6a1b9a; }
+  .tag-int { background: var(--amber-bg); color: var(--amber); }
+  .action-list { margin-top: 8px; }
+  .action-item { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--text2); margin-bottom: 6px; line-height: 1.5; }
+  .action-icon { font-size: 15px; flex-shrink: 0; margin-top: 1px; }
+
+  .footer { text-align: center; padding: 20px; font-size: 12px; color: var(--text3); }
+
+  @media (max-width: 600px) {
+    .day-compare { grid-template-columns: 1fr; }
+    .kpi-row { grid-template-columns: repeat(2,1fr); }
+    .top-bar h1 { font-size: 15px; }
+  }
+
+  .creative-section { margin-bottom: 24px; }
+  .creative-type-block { margin-bottom: 20px; }
+  .creative-type-header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: var(--radius) var(--radius) 0 0; font-size: 13px; font-weight: 600; }
+  .type-asc { background: #e3f2fd; color: #1565c0; }
+  .type-int { background: #fff3e0; color: #e65100; }
+  .type-rt  { background: #f3e5f5; color: #6a1b9a; }
+  .type-other { background: var(--surface2); color: var(--text2); }
+  .creative-table { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--surface); border: 0.5px solid var(--border); border-top: none; border-radius: 0 0 var(--radius) var(--radius); overflow: hidden; }
+  .creative-table th { background: var(--surface2); padding: 8px 12px; text-align: left; font-weight: 500; color: var(--text3); font-size: 11px; border-bottom: 0.5px solid var(--border); white-space: nowrap; }
+  .creative-table td { padding: 8px 12px; border-bottom: 0.5px solid var(--border); vertical-align: middle; }
+  .creative-table tr:last-child td { border-bottom: none; }
+  .creative-table tr:hover td { background: var(--surface2); }
+  .ad-name { font-weight: 500; color: var(--text); max-width: 220px; word-break: break-all; line-height: 1.4; }
+  .rec-badge { display: inline-block; padding: 3px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+  .rec-kill   { background: #ffebee; color: #c62828; }
+  .rec-pause  { background: #fff8e1; color: #f57f17; }
+  .rec-recut  { background: #fff3e0; color: #e65100; }
+  .rec-keep   { background: #e8f5e9; color: #2e7d32; }
+  .rec-boost  { background: #e3f2fd; color: #1565c0; }
+  .rec-watch  { background: var(--surface2); color: var(--text2); }
+  .creative-loading { padding: 20px; text-align: center; color: var(--text2); font-size: 13px; }
+  .spend-bar-wrap { width: 60px; height: 6px; background: var(--surface2); border-radius: 3px; display: inline-block; vertical-align: middle; }
+  .spend-bar { height: 6px; border-radius: 3px; background: #1877f2; }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <h1>📊 META 廣告數據儀表板</h1>
+  <div style="display:flex;gap:10px;align-items:center;">
+    <span class="date-badge" id="todayBadge">載入中...</span>
+    <button class="refresh-btn" onclick="loadAllData()">↻ 重新整理</button>
+  </div>
+</div>
+
+<div class="container">
+  <div class="client-tabs">
+    <button class="client-tab active" onclick="switchClient(0)">全國麗園</button>
+    <button class="client-tab" onclick="switchClient(1)">如邑堂餅家</button>
+  </div>
+
+  <!-- 全國麗園 -->
+  <div class="client-panel active" id="panel-0">
+    <div class="status-bar"><div class="status-dot loading" id="status-dot-0"></div><span id="status-text-0">資料載入中...</span></div>
+    <div id="error-0"></div>
+    <div id="content-0"></div>
+  </div>
+
+  <!-- 如邑堂餅家 -->
+  <div class="client-panel" id="panel-1">
+    <div class="status-bar"><div class="status-dot loading" id="status-dot-1"></div><span id="status-text-1">資料載入中...</span></div>
+    <div id="error-1"></div>
+    <div id="content-1"></div>
+  </div>
+</div>
+
+<div class="footer">資料來源：META Marketing API｜每次重新整理抓取最新數據</div>
+
+<script>
+const TOKEN = 'EAAUPmHiPNZCsBRJY7XEOJ5LU8vw8SexDzZCo2HAZBVB5JWi0beS1bs8OULV4GuwaSnzt1czb0Ks8OYf7Vne66kJcqlaVKrVbyThMufl7LcrdEWlrc277utykZA63prxbRiJ7LW0Gk1bBxZBoEfIZA0ZCgzHKGgVfPArfxtccTU0jnTNkgRD513hXriVYgZDZD';
+
+const CLIENTS = [
+  { name: '全國麗園', accounts: ['619361573660852'] },
+  { name: '如邑堂餅家', accounts: ['633783697353799','1568525027410316'] }
+];
+
+const FIELDS = 'spend,impressions,clicks,ctr,cpc,cpp,reach,frequency,actions,action_values,cost_per_action_type,video_p25_watched_actions,video_p50_watched_actions,video_p100_watched_actions,video_play_actions,unique_clicks,outbound_clicks,outbound_clicks_ctr';
+
+function getDateRange() {
+  const now = new Date();
+  const fmt = d => {
+    const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  };
+  // 昨天 vs 前天（今天資料不完整，以昨天為主）
+  const yest = new Date(now); yest.setDate(yest.getDate()-1);
+  const dayBefore = new Date(now); dayBefore.setDate(dayBefore.getDate()-2);
+  return { today: fmt(yest), yesterday: fmt(dayBefore) };
+}
+
+function getVal(data, key) {
+  if (!data || !data.actions) return 0;
+  const a = data.actions.find(x => x.action_type === key);
+  return a ? parseFloat(a.value) : 0;
+}
+
+function getCPA(data, key) {
+  if (!data || !data.cost_per_action_type) return 0;
+  const a = data.cost_per_action_type.find(x => x.action_type === key);
+  return a ? parseFloat(a.value) : 0;
+}
+
+function getACV(data, key) {
+  if (!data || !data.action_values) return 0;
+  const a = data.action_values.find(x => x.action_type === key);
+  return a ? parseFloat(a.value) : 0;
+}
+
+function getVideoVal(data, field) {
+  if (!data || !data[field]) return 0;
+  return data[field].reduce((s,x) => s + parseFloat(x.value||0), 0);
+}
+
+function getOutbound(data) {
+  if (!data || !data.outbound_clicks) return 0;
+  return data.outbound_clicks.reduce((s,x) => s + parseFloat(x.value||0), 0);
+}
+
+function mergeInsights(arr) {
+  if (!arr || arr.length === 0) return null;
+  const result = {};
+  const numericKeys = ['spend','impressions','clicks','reach'];
+  const first = arr[0];
+  for (const key of numericKeys) {
+    result[key] = arr.reduce((s,d) => s + parseFloat(d[key]||0), 0);
+  }
+  result.ctr = result.impressions > 0 ? (result.clicks / result.impressions * 100) : 0;
+  result.cpc = result.clicks > 0 ? result.spend / result.clicks : 0;
+
+  // Merge actions
+  const mergeActions = (field) => {
+    const combined = {};
+    for (const d of arr) {
+      if (d[field]) for (const a of d[field]) {
+        combined[a.action_type] = (combined[a.action_type]||0) + parseFloat(a.value||0);
+      }
+    }
+    return Object.entries(combined).map(([action_type,value]) => ({action_type, value: String(value)}));
+  };
+  result.actions = mergeActions('actions');
+  result.action_values = mergeActions('action_values');
+
+  // Cost per action (recalculate)
+  result.cost_per_action_type = [];
+  for (const a of result.actions) {
+    const totalVal = parseFloat(a.value);
+    if (totalVal > 0 && result.spend > 0) {
+      result.cost_per_action_type.push({ action_type: a.action_type, value: String((result.spend / totalVal).toFixed(2)) });
+    }
+  }
+
+  // Video fields
+  for (const vf of ['video_p25_watched_actions','video_p50_watched_actions','video_p100_watched_actions','video_play_actions']) {
+    const combined = {};
+    for (const d of arr) {
+      if (d[vf]) for (const a of d[vf]) {
+        combined[a.action_type||'video'] = (combined[a.action_type||'video']||0) + parseFloat(a.value||0);
+      }
+    }
+    result[vf] = Object.entries(combined).map(([action_type,value]) => ({action_type, value: String(value)}));
+  }
+
+  // outbound_clicks
+  const oc = {};
+  for (const d of arr) {
+    if (d.outbound_clicks) for (const a of d.outbound_clicks) {
+      oc[a.action_type||'link'] = (oc[a.action_type||'link']||0) + parseFloat(a.value||0);
+    }
+  }
+  result.outbound_clicks = Object.entries(oc).map(([action_type,value]) => ({action_type, value: String(value)}));
+
+  return result;
+}
+
+
+const AD_FIELDS = 'ad_name,adset_name,campaign_name,spend,impressions,clicks,ctr,actions,action_values,cost_per_action_type,outbound_clicks';
+
+async function fetchAdInsights(accountId, dateStart) {
+  const url = `https://graph.facebook.com/v19.0/act_${accountId}/insights?fields=${AD_FIELDS}&time_range={"since":"${dateStart}","until":"${dateStart}"}&level=ad&limit=200&access_token=${TOKEN}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message);
+  return data.data || [];
+}
+
+function classifyAdType(campaignName, adsetName, adName) {
+  const txt = ((campaignName||'') + ' ' + (adsetName||'') + ' ' + (adName||'')).toUpperCase();
+  if (txt.includes('ASC') || txt.includes('ADVANTAGE') || txt.includes('SHOPPING')) return 'ASC';
+  if (txt.includes('RT') || txt.includes('再行銷') || txt.includes('RETARGET') || txt.includes('粉專') || txt.includes('看過網站') || txt.includes('看過') || txt.includes('購買')) return 'RT';
+  if (txt.includes('興趣') || txt.includes('常態') || txt.includes('INTEREST')) return '興趣受眾';
+  return '其他';
+}
+
+function getAdVal(ad, key) {
+  if (!ad.actions) return 0;
+  const a = ad.actions.find(x => x.action_type === key);
+  return a ? parseFloat(a.value) : 0;
+}
+function getAdCPA(ad, key) {
+  if (!ad.cost_per_action_type) return 0;
+  const a = ad.cost_per_action_type.find(x => x.action_type === key);
+  return a ? parseFloat(a.value) : 0;
+}
+function getAdACV(ad, key) {
+  if (!ad.action_values) return 0;
+  const a = ad.action_values.find(x => x.action_type === key);
+  return a ? parseFloat(a.value) : 0;
+}
+function getAdOutbound(ad) {
+  if (!ad.outbound_clicks) return 0;
+  return ad.outbound_clicks.reduce((s,x) => s + parseFloat(x.value||0), 0);
+}
+
+function recommendAd(ad, maxSpend) {
+  const spend = parseFloat(ad.spend||0);
+  const roas = spend > 0 ? getAdACV(ad,'purchase') / spend : 0;
+  const cpa = getAdCPA(ad,'purchase');
+  const purchase = getAdVal(ad,'purchase');
+  const ctr = parseFloat(ad.ctr||0);
+  const cart = getAdVal(ad,'add_to_cart');
+  const outbound = getAdOutbound(ad);
+  const convRate = outbound > 0 ? purchase / outbound * 100 : 0;
+
+  // 預算太少，資料不夠
+  if (spend < 200) {
+    return { badge: 'rec-watch', label: '觀察中', reason: `花費 NT$${Math.round(spend)} 資料不足，需累積至 NT$300+ 再判斷` };
+  }
+  // 有花費但零購買零加購，且 CTR 也低
+  if (purchase === 0 && cart === 0 && spend >= 500 && ctr < 0.8) {
+    return { badge: 'rec-kill', label: '立即淘汰', reason: `花費 NT$${Math.round(spend)} 但零加購零購買，CTR 僅 ${ctr.toFixed(2)}%，素材對受眾完全無吸引力` };
+  }
+  // 有花費，CTR 低但有一點加購
+  if (purchase === 0 && cart > 0 && spend >= 400) {
+    return { badge: 'rec-recut', label: '優化素材', reason: `有 ${cart} 次加購但未成交，落地頁或結帳流程可能有障礙，或需加強促購文案` };
+  }
+  // ROAS 很差
+  if (roas > 0 && roas < 1.5 && spend >= 600) {
+    return { badge: 'rec-recut', label: '重新剪輯', reason: `ROAS ${roas.toFixed(2)}x 低於盈虧點，素材訴求需調整；建議換角度重新製作` };
+  }
+  // ROAS 普通
+  if (roas >= 1.5 && roas < 2.5) {
+    return { badge: 'rec-watch', label: '持續觀察', reason: `ROAS ${roas.toFixed(2)}x 未達標，仍有改善空間；維持預算觀察 2-3 天再決定` };
+  }
+  // ROAS 達標
+  if (roas >= 2.5 && roas < 4) {
+    return { badge: 'rec-keep', label: '持續投放', reason: `ROAS ${roas.toFixed(2)}x 達標，維持現有預算即可` };
+  }
+  // ROAS 優異
+  if (roas >= 4) {
+    return { badge: 'rec-boost', label: '加大預算', reason: `ROAS ${roas.toFixed(2)}x 表現優異！這是明星素材，建議增加 20-30% 預算放大效益` };
+  }
+  // CTR 低但剛起步
+  if (ctr < 1 && spend < 400) {
+    return { badge: 'rec-watch', label: '觀察中', reason: `CTR ${ctr.toFixed(2)}% 偏低，花費尚不足以判斷，再跑 1-2 天` };
+  }
+  return { badge: 'rec-watch', label: '持續觀察', reason: '數據尚在學習期，維持預算繼續觀察' };
+}
+
+async function buildCreativeAnalysis(clientIdx, containerId) {
+  const el = document.getElementById(containerId);
+  el.innerHTML = '<div class="creative-loading">⏳ 載入廣告素材數據...</div>';
+  const client = CLIENTS[clientIdx];
+  const { today } = getDateRange();
+  let allAds = [];
+  for (const acc of client.accounts) {
+    try {
+      const ads = await fetchAdInsights(acc, today);
+      allAds = allAds.concat(ads);
+    } catch(e) { /* skip */ }
+  }
+  if (allAds.length === 0) {
+    el.innerHTML = '<div class="creative-loading" style="color:var(--text3)">無法取得廣告素材數據，請確認 Token 權限包含 ads_read</div>';
+    return;
+  }
+
+  // 過濾花費 > 0
+  allAds = allAds.filter(a => parseFloat(a.spend||0) > 0);
+  if (allAds.length === 0) {
+    el.innerHTML = '<div class="creative-loading" style="color:var(--text3)">昨天無花費廣告</div>';
+    return;
+  }
+
+  // 分類
+  const groups = { 'ASC': [], '興趣受眾': [], 'RT': [], '其他': [] };
+  const maxSpend = Math.max(...allAds.map(a => parseFloat(a.spend||0)));
+  for (const ad of allAds) {
+    const type = classifyAdType(ad.campaign_name, ad.adset_name, ad.ad_name);
+    groups[type].push(ad);
+  }
+  // 各群組按花費排序
+  for (const g of Object.values(groups)) g.sort((a,b) => parseFloat(b.spend||0) - parseFloat(a.spend||0));
+
+  const typeColors = { 'ASC': 'type-asc', '興趣受眾': 'type-int', 'RT': 'type-rt', '其他': 'type-other' };
+  const typeIcons = { 'ASC': '🤖', '興趣受眾': '🎯', 'RT': '🔁', '其他': '📋' };
+
+  let html = '';
+  for (const [typeName, ads] of Object.entries(groups)) {
+    if (ads.length === 0) continue;
+    const cls = typeColors[typeName];
+    const icon = typeIcons[typeName];
+    const totalSpend = ads.reduce((s,a) => s + parseFloat(a.spend||0), 0);
+    const totalPurchase = ads.reduce((s,a) => s + getAdVal(a,'purchase'), 0);
+    const totalRoas = totalSpend > 0 ? ads.reduce((s,a) => s + getAdACV(a,'purchase'), 0) / totalSpend : 0;
+
+    html += `
+    <div class="creative-type-block">
+      <div class="creative-type-header ${cls}">
+        ${icon} ${typeName}
+        <span style="margin-left:auto;font-weight:400;font-size:12px">
+          ${ads.length} 組廣告｜總花費 NT$${Math.round(totalSpend).toLocaleString()}｜總購買 ${totalPurchase} 筆｜ROAS ${totalRoas.toFixed(2)}x
+        </span>
+      </div>
+      <table class="creative-table">
+        <thead><tr>
+          <th>廣告名稱</th>
+          <th>花費</th>
+          <th>CTR</th>
+          <th>加購</th>
+          <th>購買</th>
+          <th>CPA</th>
+          <th>ROAS</th>
+          <th>建議</th>
+          <th>原因</th>
+        </tr></thead>
+        <tbody>`;
+
+    for (const ad of ads) {
+      const spend = parseFloat(ad.spend||0);
+      const ctr = parseFloat(ad.ctr||0);
+      const cart = getAdVal(ad,'add_to_cart');
+      const purchase = getAdVal(ad,'purchase');
+      const cpa = getAdCPA(ad,'purchase');
+      const roas = spend > 0 ? getAdACV(ad,'purchase') / spend : 0;
+      const rec = recommendAd(ad, maxSpend);
+      const barW = Math.round(spend / maxSpend * 60);
+      const adName = (ad.ad_name || '未命名廣告').replace(/</g,'&lt;');
+
+      html += `<tr>
+        <td><div class="ad-name" title="${adName}">${adName.length > 28 ? adName.slice(0,28)+'…' : adName}</div>
+            <div style="font-size:10px;color:var(--text3);margin-top:2px">${(ad.adset_name||'').slice(0,30)}</div></td>
+        <td>
+          <div>NT$${Math.round(spend).toLocaleString()}</div>
+          <div class="spend-bar-wrap"><div class="spend-bar" style="width:${barW}px"></div></div>
+        </td>
+        <td>${ctr.toFixed(2)}%</td>
+        <td>${cart > 0 ? cart : '-'}</td>
+        <td>${purchase > 0 ? purchase : '-'}</td>
+        <td>${cpa > 0 ? 'NT$'+Math.round(cpa).toLocaleString() : '-'}</td>
+        <td>${roas > 0 ? roas.toFixed(2)+'x' : '-'}</td>
+        <td><span class="rec-badge ${rec.badge}">${rec.label}</span></td>
+        <td style="font-size:11px;color:var(--text2);max-width:200px;line-height:1.5">${rec.reason}</td>
+      </tr>`;
+    }
+    html += `</tbody></table></div>`;
+  }
+  el.innerHTML = html;
+}
+
+async function fetchInsights(accountId, dateStart, dateEnd) {
+  const url = `https://graph.facebook.com/v19.0/act_${accountId}/insights?fields=${FIELDS}&time_range={"since":"${dateStart}","until":"${dateEnd}"}&level=account&access_token=${TOKEN}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message);
+  return data.data && data.data.length > 0 ? data.data[0] : null;
+}
+
+async function fetchClientData(clientIndex) {
+  const client = CLIENTS[clientIndex];
+  const { today, yesterday } = getDateRange();
+  const results = { today: [], yesterday: [] };
+  for (const acc of client.accounts) {
+    const [t, y] = await Promise.all([
+      fetchInsights(acc, today, today).catch(()=>null),
+      fetchInsights(acc, yesterday, yesterday).catch(()=>null)
+    ]);
+    if (t) results.today.push(t);
+    if (y) results.yesterday.push(y);
+  }
+  return {
+    today: mergeInsights(results.today),
+    yesterday: mergeInsights(results.yesterday)
+  };
+}
+
+function fmt(n, type='num') {
+  if (n === null || n === undefined || isNaN(n)) return '-';
+  if (type === 'money') return 'NT$' + Math.round(n).toLocaleString();
+  if (type === 'pct') return n.toFixed(2) + '%';
+  if (type === 'x') return n.toFixed(2) + 'x';
+  if (type === 'dec') return n.toFixed(2);
+  return Math.round(n).toLocaleString();
+}
+
+function changeBadge(today, yest, lowerBetter=false) {
+  if (!yest || yest === 0) return '';
+  const pct = ((today - yest) / yest) * 100;
+  const isGood = lowerBetter ? pct < 0 : pct > 0;
+  const cls = Math.abs(pct) < 1 ? 'neu' : (isGood ? 'up' : 'down');
+  const sign = pct > 0 ? '+' : '';
+  return `<span class="change-badge ${cls}">${sign}${pct.toFixed(1)}%</span>`;
+}
+
+function buildMetricsTable(t, y) {
+  const rows = [
+    ['花費金額', fmt(t?.spend,'money'), fmt(y?.spend,'money'), t?.spend, y?.spend, true, false],
+    ['CTR 點擊率', fmt(t?.ctr,'pct'), fmt(y?.ctr,'pct'), t?.ctr, y?.ctr, false, false],
+    ['連結點擊次數', fmt(t?.clicks), fmt(y?.clicks), t?.clicks, y?.clicks, false, false],
+    ['連外點擊次數', fmt(getOutbound(t)), fmt(getOutbound(y)), getOutbound(t), getOutbound(y), false, false],
+    ['曝光次數', fmt(t?.impressions), fmt(y?.impressions), t?.impressions, y?.impressions, false, false],
+    ['觸及人數', fmt(t?.reach), fmt(y?.reach), t?.reach, y?.reach, false, false],
+    ['內容瀏覽次數', fmt(getVal(t,'view_content')), fmt(getVal(y,'view_content')), getVal(t,'view_content'), getVal(y,'view_content'), false, false],
+    ['內容瀏覽成本', fmt(getCPA(t,'view_content'),'money'), fmt(getCPA(y,'view_content'),'money'), getCPA(t,'view_content'), getCPA(y,'view_content'), true, true],
+    ['加到購物車次數', fmt(getVal(t,'add_to_cart')), fmt(getVal(y,'add_to_cart')), getVal(t,'add_to_cart'), getVal(y,'add_to_cart'), false, false],
+    ['每次加購成本', fmt(getCPA(t,'add_to_cart'),'money'), fmt(getCPA(y,'add_to_cart'),'money'), getCPA(t,'add_to_cart'), getCPA(y,'add_to_cart'), true, true],
+    ['開始結帳次數', fmt(getVal(t,'initiate_checkout')), fmt(getVal(y,'initiate_checkout')), getVal(t,'initiate_checkout'), getVal(y,'initiate_checkout'), false, false],
+    ['開始結帳成本', fmt(getCPA(t,'initiate_checkout'),'money'), fmt(getCPA(y,'initiate_checkout'),'money'), getCPA(t,'initiate_checkout'), getCPA(y,'initiate_checkout'), true, true],
+    ['購買次數', fmt(getVal(t,'purchase')), fmt(getVal(y,'purchase')), getVal(t,'purchase'), getVal(y,'purchase'), false, false],
+    ['購買轉換值', fmt(getACV(t,'purchase'),'money'), fmt(getACV(y,'purchase'),'money'), getACV(t,'purchase'), getACV(y,'purchase'), false, false],
+    ['每次購買成本(CPA)', fmt(getCPA(t,'purchase'),'money'), fmt(getCPA(y,'purchase'),'money'), getCPA(t,'purchase'), getCPA(y,'purchase'), true, true],
+    ['購買ROAS', fmt(t?.spend > 0 ? getACV(t,'purchase')/t.spend : 0,'x'), fmt(y?.spend > 0 ? getACV(y,'purchase')/y.spend : 0,'x'), t?.spend > 0 ? getACV(t,'purchase')/t.spend : 0, y?.spend > 0 ? getACV(y,'purchase')/y.spend : 0, false, false],
+    ['轉換率(購買/點擊)', fmt(t?.clicks > 0 ? getVal(t,'purchase')/t.clicks*100 : 0,'pct'), fmt(y?.clicks > 0 ? getVal(y,'purchase')/y.clicks*100 : 0,'pct'), t?.clicks > 0 ? getVal(t,'purchase')/t.clicks*100 : 0, y?.clicks > 0 ? getVal(y,'purchase')/y.clicks*100 : 0, false, false],
+    ['貼文互動次數', fmt(getVal(t,'post_engagement')), fmt(getVal(y,'post_engagement')), getVal(t,'post_engagement'), getVal(y,'post_engagement'), false, false],
+    ['貼文心情數', fmt(getVal(t,'post_reaction')), fmt(getVal(y,'post_reaction')), getVal(t,'post_reaction'), getVal(y,'post_reaction'), false, false],
+    ['影片播放次數', fmt(getVideoVal(t,'video_play_actions')), fmt(getVideoVal(y,'video_play_actions')), getVideoVal(t,'video_play_actions'), getVideoVal(y,'video_play_actions'), false, false],
+    ['影片播放25%次數', fmt(getVideoVal(t,'video_p25_watched_actions')), fmt(getVideoVal(y,'video_p25_watched_actions')), getVideoVal(t,'video_p25_watched_actions'), getVideoVal(y,'video_p25_watched_actions'), false, false],
+    ['影片播放50%次數', fmt(getVideoVal(t,'video_p50_watched_actions')), fmt(getVideoVal(y,'video_p50_watched_actions')), getVideoVal(t,'video_p50_watched_actions'), getVideoVal(y,'video_p50_watched_actions'), false, false],
+    ['影片播放100%次數', fmt(getVideoVal(t,'video_p100_watched_actions')), fmt(getVideoVal(y,'video_p100_watched_actions')), getVideoVal(t,'video_p100_watched_actions'), getVideoVal(y,'video_p100_watched_actions'), false, false],
+  ];
+
+  return `
+  <div class="metrics-table">
+    <table>
+      <thead><tr>
+        <th>指標</th>
+        <th>昨天</th>
+        <th>前天</th>
+        <th>變化</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map(([label, tv, yv, tRaw, yRaw, lowerBetter, skipZero]) => {
+          const show = !skipZero || (tRaw > 0 || yRaw > 0);
+          if (!show && tRaw === 0 && yRaw === 0) return `<tr><td>${label}</td><td colspan="3" style="color:var(--text3)">暫無資料</td></tr>`;
+          return `<tr><td>${label}</td><td><b>${tv}</b></td><td style="color:var(--text3)">${yv}</td><td>${changeBadge(tRaw, yRaw, lowerBetter)}</td></tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function buildTopKPIs(t, y) {
+  const spend_t = t?.spend || 0, spend_y = y?.spend || 0;
+  const purchase_t = getVal(t,'purchase'), purchase_y = getVal(y,'purchase');
+  const cpa_t = getCPA(t,'purchase'), cpa_y = getCPA(y,'purchase');
+  const roas_t = spend_t > 0 ? getACV(t,'purchase')/spend_t : 0;
+  const roas_y = spend_y > 0 ? getACV(y,'purchase')/spend_y : 0;
+
+  return `
+  <div class="day-compare">
+    <div class="day-card">
+      <h3><span class="day-dot-today"></span>昨天</h3>
+      <div class="kpi-row">
+        <div class="kpi"><div class="kpi-label">花費</div><div class="kpi-value" style="font-size:16px">${fmt(spend_t,'money')}</div></div>
+        <div class="kpi"><div class="kpi-label">購買</div><div class="kpi-value">${fmt(purchase_t)}</div></div>
+        <div class="kpi"><div class="kpi-label">CPA</div><div class="kpi-value" style="font-size:15px">${fmt(cpa_t,'money')}</div></div>
+      </div>
+      <div class="kpi-row">
+        <div class="kpi"><div class="kpi-label">ROAS</div><div class="kpi-value">${fmt(roas_t,'x')}</div></div>
+        <div class="kpi"><div class="kpi-label">CTR</div><div class="kpi-value">${fmt(t?.ctr,'pct')}</div></div>
+        <div class="kpi"><div class="kpi-label">加購次數</div><div class="kpi-value">${fmt(getVal(t,'add_to_cart'))}</div></div>
+      </div>
+    </div>
+    <div class="day-card">
+      <h3><span class="day-dot-yest"></span>前天</h3>
+      <div class="kpi-row">
+        <div class="kpi"><div class="kpi-label">花費</div><div class="kpi-value" style="font-size:16px">${fmt(spend_y,'money')}</div></div>
+        <div class="kpi"><div class="kpi-label">購買</div><div class="kpi-value">${fmt(purchase_y)}</div></div>
+        <div class="kpi"><div class="kpi-label">CPA</div><div class="kpi-value" style="font-size:15px">${fmt(cpa_y,'money')}</div></div>
+      </div>
+      <div class="kpi-row">
+        <div class="kpi"><div class="kpi-label">ROAS</div><div class="kpi-value">${fmt(roas_y,'x')}</div></div>
+        <div class="kpi"><div class="kpi-label">CTR</div><div class="kpi-value">${fmt(y?.ctr,'pct')}</div></div>
+        <div class="kpi"><div class="kpi-label">加購次數</div><div class="kpi-value">${fmt(getVal(y,'add_to_cart'))}</div></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildAIAnalysis(clientName, t, y, containerId) {
+  const el = document.getElementById(containerId);
+
+  const spend_t = t?.spend||0, spend_y = y?.spend||0;
+  const cpa_t = getCPA(t,'purchase'), cpa_y = getCPA(y,'purchase');
+  const roas_t = spend_t>0 ? getACV(t,'purchase')/spend_t : 0;
+  const roas_y = spend_y>0 ? getACV(y,'purchase')/spend_y : 0;
+  const purchase_t = getVal(t,'purchase'), purchase_y = getVal(y,'purchase');
+  const cart_t = getVal(t,'add_to_cart'), cart_y = getVal(y,'add_to_cart');
+  const ctr_t = parseFloat(t?.ctr||0), ctr_y = parseFloat(y?.ctr||0);
+  const checkout_t = getVal(t,'initiate_checkout'), checkout_y = getVal(y,'initiate_checkout');
+  const outbound_t = getOutbound(t), outbound_y = getOutbound(y);
+  const video_t = getVideoVal(t,'video_play_actions'), video_y = getVideoVal(y,'video_play_actions');
+  const v100_t = getVideoVal(t,'video_p100_watched_actions'), v100_y = getVideoVal(y,'video_p100_watched_actions');
+
+  // 只有昨天有數據時才以昨天為基準分析
+  const hasYest = spend_y > 0;
+  const hasToday = spend_t > 0;
+
+  // ── 計算各項變化率 ──
+  const pctChange = (a, b) => b > 0 ? ((a - b) / b * 100) : null;
+  const cpaPct = pctChange(cpa_t, cpa_y);
+  const roasPct = pctChange(roas_t, roas_y);
+  const ctrPct = pctChange(ctr_t, ctr_y);
+  const cartPct = pctChange(cart_t, cart_y);
+  const checkoutPct = pctChange(checkout_t, checkout_y);
+  const purchasePct = pctChange(purchase_t, purchase_y);
+  const convRate_t = outbound_t > 0 ? (purchase_t / outbound_t * 100) : 0;
+  const convRate_y = outbound_y > 0 ? (purchase_y / outbound_y * 100) : 0;
+  const v100Rate_t = video_t > 0 ? (v100_t / video_t * 100) : 0;
+  const v100Rate_y = video_y > 0 ? (v100_y / video_y * 100) : 0;
+
+  // ── CPA 分析 ──
+  let cpaAnalysis = '';
+  if (!hasYest) {
+    cpaAnalysis = '昨天無花費數據，無法進行 CPA 比較分析。請確認廣告是否昨天才開始投放。';
+  } else if (!hasToday) {
+    cpaAnalysis = `昨天 CPA 為 NT$${Math.round(cpa_y)}，今天數據尚未產生（可能廣告剛開始跑，或數據延遲）。建議下午 2 點後再重新整理查看。`;
+  } else if (cpaPct === null) {
+    cpaAnalysis = `今天 CPA NT$${Math.round(cpa_t)}，昨天無購買數據可比較。`;
+  } else {
+    const reasons = [];
+    if (ctrPct !== null && ctrPct < -10) reasons.push(`CTR 下滑 ${Math.abs(ctrPct).toFixed(1)}%，素材吸引力降低，點擊成本上升`);
+    if (ctrPct !== null && ctrPct > 10) reasons.push(`CTR 提升 ${ctrPct.toFixed(1)}%，素材表現佳，更多低成本點擊進入`);
+    const convPct = pctChange(convRate_t, convRate_y);
+    if (convPct !== null && convPct < -10) reasons.push(`落地頁轉換率下滑 ${Math.abs(convPct).toFixed(1)}%，流量品質或頁面體驗需檢查`);
+    if (convPct !== null && convPct > 10) reasons.push(`落地頁轉換率提升 ${convPct.toFixed(1)}%，購買意圖強的受眾比例增加`);
+    if (checkoutPct !== null && checkoutPct < -15) reasons.push(`結帳次數下降 ${Math.abs(checkoutPct).toFixed(1)}%，購買漏斗中段流失加重`);
+    if (reasons.length === 0) reasons.push('各漏斗指標變化在正常範圍內，CPA 波動屬正常競標機制浮動');
+    const direction = cpaPct > 0 ? `上升 ${cpaPct.toFixed(1)}%（NT$${Math.round(cpa_y)} → NT$${Math.round(cpa_t)}）` : `下降 ${Math.abs(cpaPct).toFixed(1)}%（NT$${Math.round(cpa_y)} → NT$${Math.round(cpa_t)}）`;
+    cpaAnalysis = `CPA ${direction}。主因：${reasons.join('；')}。`;
+  }
+
+  // ── 今昨天整體比較 ──
+  let dailyComp = '';
+  if (!hasYest || !hasToday) {
+    if (!hasToday) dailyComp = `今天數據尚未產生，以昨天表現為基準：ROAS ${roas_y.toFixed(2)}x、CPA NT$${Math.round(cpa_y)}、購買 ${purchase_y} 筆。整體表現${roas_y >= 3 ? '良好' : roas_y >= 2 ? '普通' : '偏弱'}，建議持續觀察今日數據走勢。`;
+    else dailyComp = '昨天無數據，今天為第一筆可參考數據，待明天可進行比較分析。';
+  } else {
+    const goods = [], bads = [];
+    if (roasPct > 5) goods.push(`ROAS 提升至 ${roas_t.toFixed(2)}x`);
+    else if (roasPct < -5) bads.push(`ROAS 下滑至 ${roas_t.toFixed(2)}x`);
+    if (ctrPct > 5) goods.push(`CTR 改善至 ${ctr_t.toFixed(2)}%`);
+    else if (ctrPct < -5) bads.push(`CTR 下滑至 ${ctr_t.toFixed(2)}%`);
+    if (purchasePct > 0) goods.push(`購買筆數增加（${purchase_y}→${purchase_t}筆）`);
+    else if (purchasePct < -10) bads.push(`購買筆數減少（${purchase_y}→${purchase_t}筆）`);
+    if (cartPct > 10) goods.push(`加購人數增加 ${cartPct.toFixed(0)}%`);
+    else if (cartPct < -10) bads.push(`加購人數減少 ${Math.abs(cartPct).toFixed(0)}%`);
+    if (goods.length > 0 && bads.length === 0) dailyComp = `今天整體優於昨天：${goods.join('、')}。數據趨勢向好，可適度放大預算。`;
+    else if (bads.length > 0 && goods.length === 0) dailyComp = `今天整體弱於昨天：${bads.join('、')}。建議檢查素材疲乏或受眾重疊問題。`;
+    else if (goods.length > 0 && bads.length > 0) dailyComp = `今天表現喜憂參半。正面：${goods.join('、')}；需注意：${bads.join('、')}。建議優先排查負面指標原因。`;
+    else dailyComp = `今天與昨天數據相近，整體穩定。ROAS ${roas_t.toFixed(2)}x，CPA NT$${Math.round(cpa_t)}，在正常波動範圍內。`;
+  }
+
+  // ── 廣告策略建議 ──
+  // 以昨天（或今天）為主要判斷基準
+  const refRoas = hasYest ? roas_y : roas_t;
+  const refCpa = hasYest ? cpa_y : cpa_t;
+  const refCart = hasYest ? cart_y : cart_t;
+  const refPurchase = hasYest ? purchase_y : purchase_t;
+  const refSpend = hasYest ? spend_y : spend_t;
+
+  // ASC 建議（看 ROAS 和整體成效）
+  let ascAction, ascReason, ascCls;
+  if (refRoas >= 4) {
+    ascAction = '加預算 +20%'; ascCls = 'up';
+    ascReason = `ROAS ${refRoas.toFixed(2)}x 表現優異，ASC 演算法已找到高品質受眾，趁勢放大預算可提升整體轉換量。`;
+  } else if (refRoas >= 2.5) {
+    ascAction = '持續進行'; ascCls = 'up';
+    ascReason = `ROAS ${refRoas.toFixed(2)}x 達標，ASC 正在學習最佳受眾組合，維持預算穩定讓演算法持續優化即可。`;
+  } else if (refRoas >= 1.5) {
+    ascAction = '觀察 3 天再決定'; ascCls = 'neu';
+    ascReason = `ROAS ${refRoas.toFixed(2)}x 偏低，ASC 可能仍在學習期（建議至少跑 7 天）。先維持預算，3 天後若無改善再調整素材。`;
+  } else if (refSpend < 500) {
+    ascAction = '資料不足，繼續觀察'; ascCls = 'neu';
+    ascReason = `花費 NT$${Math.round(refSpend)} 過低，數據樣本不足以判斷。建議每日至少 NT$1,000 以上讓演算法收集足夠數據。`;
+  } else {
+    ascAction = '暫停並換素材'; ascCls = 'down';
+    ascReason = `ROAS ${refRoas.toFixed(2)}x 低於盈虧平衡點，ASC 無法找到有效受眾。建議暫停、更換素材後重新啟動學習期。`;
+  }
+
+  // 興趣受眾建議（看 CTR 和加購率）
+  let intAction, intReason, intCls;
+  const cartRate = refSpend > 0 ? (refCart / (outbound_y||outbound_t||1) * 100) : 0;
+  if (refRoas >= 3 && ctr_y >= 2) {
+    intAction = '持續進行'; intCls = 'up';
+    intReason = `CTR ${ctr_y.toFixed(2)}% 且 ROAS ${refRoas.toFixed(2)}x，興趣受眾精準度高。可嘗試擴大相似受眾或疊加新興趣標籤。`;
+  } else if (ctr_y < 1 && ctr_y > 0) {
+    intAction = '更換素材或受眾'; intCls = 'down';
+    intReason = `CTR 僅 ${ctr_y.toFixed(2)}%，廣告對目標受眾吸引力不足。建議測試新素材（影片 vs 圖片）或重新定義興趣標籤。`;
+  } else if (refCart > 0 && refPurchase === 0) {
+    intAction = '調整落地頁'; intCls = 'neu';
+    intReason = `有 ${refCart} 次加購但零購買，問題在落地頁或結帳流程，非受眾問題。先修正轉換障礙再評估廣告組。`;
+  } else {
+    intAction = '維持並 A/B 測試'; intCls = 'neu';
+    intReason = `數據尚在積累中，建議同時跑 2-3 組不同素材，找出表現最佳的組合後集中預算。`;
+  }
+
+  // RT 再行銷建議（看結帳和購買漏斗）
+  let rtAction, rtReason, rtCls;
+  if (refPurchase > 0 && refRoas >= 5) {
+    rtAction = '加預算'; rtCls = 'up';
+    rtReason = `RT ROAS ${refRoas.toFixed(2)}x，再行銷受眾購買意圖強。這是最高效的廣告類型，建議優先確保此組有足夠預算。`;
+  } else if (checkout_y > 0 && purchase_y === 0) {
+    rtAction = '加強結帳挽回'; rtCls = 'neu';
+    rtReason = `有 ${checkout_y} 次結帳但未完成購買，建議針對「放棄結帳」受眾投放限時優惠廣告，轉換率應可顯著提升。`;
+  } else if (refCart > 5 && refPurchase < 2) {
+    rtAction = '擴大加購挽回受眾'; rtCls = 'up';
+    rtReason = `加購 ${refCart} 次但僅 ${refPurchase} 筆購買，購買意圖明確但流失嚴重。建議針對加購未購的受眾加強 RT 觸及頻次。`;
+  } else if (refPurchase > 5 && refRoas >= 3) {
+    rtAction = '持續進行'; rtCls = 'up';
+    rtReason = `RT 轉換穩定（${refPurchase} 筆購買），維持現有預算即可。注意受眾規模，若頻次超過 5 需擴充 RT 名單來源。`;
+  } else {
+    rtAction = '維持並監控頻次'; rtCls = 'neu';
+    rtReason = `目前 RT 效益尚可，持續投放。注意廣告頻次不超過 3，避免受眾疲乏；若頻次過高建議輪替素材。`;
+  }
+
+  // ── 整體評分 ──
+  let score = 50;
+  if (refRoas >= 4) score += 25; else if (refRoas >= 3) score += 15; else if (refRoas >= 2) score += 5; else score -= 10;
+  if (ctr_y >= 2) score += 10; else if (ctr_y >= 1) score += 5; else if (ctr_y > 0) score -= 5;
+  if (refPurchase >= 10) score += 10; else if (refPurchase >= 3) score += 5;
+  if (cpaPct !== null && cpaPct < -10) score += 5; else if (cpaPct !== null && cpaPct > 20) score -= 5;
+  score = Math.min(100, Math.max(0, score));
+  const scoreColor = score >= 70 ? 'var(--green)' : score >= 50 ? 'var(--amber)' : 'var(--red)';
+  const scoreTxt = score >= 75 ? '整體表現良好，建議維持策略並適度放大預算。' : score >= 55 ? '表現中等，有優化空間，建議針對弱項指標逐一改善。' : '表現偏弱，需優先找出轉換瓶頸，建議從素材和落地頁著手改善。';
+
+  const actionColor = (cls) => cls;
+
+  el.innerHTML = `
+    <div class="insight-item">
+      <div class="insight-title">📊 整體評分 <span style="font-size:20px;font-weight:700;color:${scoreColor}">${score}/100</span></div>
+      <div class="insight-body">${scoreTxt}</div>
+    </div>
+    <div class="insight-item">
+      <div class="insight-title">💰 CPA 變化分析</div>
+      <div class="insight-body">${cpaAnalysis}</div>
+    </div>
+    <div class="insight-item">
+      <div class="insight-title">📈 今昨天差異</div>
+      <div class="insight-body">${dailyComp}</div>
+    </div>
+    <div class="insight-item">
+      <div class="insight-title">🎯 廣告策略建議</div>
+      <div class="action-list">
+        <div class="action-item"><span class="change-badge ${ascCls}">${ascAction}</span>&nbsp;<span class="tag tag-asc">ASC</span>${ascReason}</div>
+        <div class="action-item" style="margin-top:8px"><span class="change-badge ${intCls}">${intAction}</span>&nbsp;<span class="tag tag-int">興趣受眾</span>${intReason}</div>
+        <div class="action-item" style="margin-top:8px"><span class="change-badge ${rtCls}">${rtAction}</span>&nbsp;<span class="tag tag-rt">再行銷 RT</span>${rtReason}</div>
+      </div>
+    </div>`;
+}
+
+function renderClient(idx, todayData, yesterdayData) {
+  const content = document.getElementById(`content-${idx}`);
+  const { today, yesterday } = getDateRange();
+
+  const kpiHtml = buildTopKPIs(todayData, yesterdayData);
+  const tableHtml = buildMetricsTable(todayData, yesterdayData);
+
+  content.innerHTML = `
+    <div style="font-size:12px;color:var(--text3);margin-bottom:12px">
+      昨天 ${today}（主）｜前天 ${yesterday}
+    </div>
+    ${kpiHtml}
+    <div class="section-title">詳細指標對比</div>
+    ${tableHtml}
+    <div class="section-title">AI 智能分析與建議</div>
+    <div class="ai-box">
+      <div class="ai-box-header">
+        <div class="ai-icon">🤖</div>
+        <h3>Claude AI 廣告優化分析</h3>
+      </div>
+      <div class="ai-content" id="ai-content-${idx}">
+        <div class="ai-loading">準備分析...</div>
+      </div>
+    </div>
+    <div class="section-title" style="margin-top:24px">📋 廣告素材逐條建議（依類型分組）</div>
+    <div class="creative-section" id="creative-${idx}">
+      <div class="creative-loading">載入中...</div>
+    </div>`;
+
+  buildAIAnalysis(CLIENTS[idx].name, todayData, yesterdayData, `ai-content-${idx}`);
+  buildCreativeAnalysis(idx, `creative-${idx}`);
+}
+
+async function loadClient(idx) {
+  const dot = document.getElementById(`status-dot-${idx}`);
+  const txt = document.getElementById(`status-text-${idx}`);
+  const errEl = document.getElementById(`error-${idx}`);
+  dot.className = 'status-dot loading';
+  txt.textContent = '資料載入中...';
+  errEl.innerHTML = '';
+
+  try {
+    const { today, yesterday } = await fetchClientData(idx);
+    dot.className = 'status-dot ok';
+    txt.textContent = `資料已更新`;
+    renderClient(idx, today, yesterday);
+  } catch(e) {
+    dot.className = 'status-dot error';
+    txt.textContent = '資料載入失敗';
+    errEl.innerHTML = `<div class="error-msg">⚠️ 無法取得資料：${e.message}</div>`;
+  }
+}
+
+function loadAllData() {
+  const { today } = getDateRange();
+  const {today:d1,yesterday:d2}=getDateRange(); document.getElementById('todayBadge').textContent = d2+' vs '+d1;
+  loadClient(0);
+  loadClient(1);
+}
+
+function switchClient(idx) {
+  document.querySelectorAll('.client-tab').forEach((t,i) => t.classList.toggle('active', i===idx));
+  document.querySelectorAll('.client-panel').forEach((p,i) => p.classList.toggle('active', i===idx));
+}
+
+loadAllData();
+</script>
+</body>
+</html>
