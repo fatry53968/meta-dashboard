@@ -309,11 +309,21 @@ function classifyAdType(campaignName, clientIdx) {
   const c = (campaignName||'');
   const t = c.toUpperCase();
   if (clientIdx === 0) {
-    // 全國麗園：格式 台灣｜轉換｜XXX
+    // 全國麗園：格式「轉換 - XXX」用 - 分隔
     if (t.includes('素材')) return '__SKIP__';
     if (t.includes('互動') || t.includes('流量') || t.includes('觀看')) return '流量/互動/觀看';
+    if (t.includes('ASC')) return 'ASC';  // ASC 優先，避免被 KOL 搶走
     if (t.includes('KOL')) return 'KOL';
-    if (t.includes('ASC')) return 'ASC';
+    if (t.includes('類似')) return '類似';
+    if (t.includes('RT')) return 'RT';
+    if (t.includes('興趣')) return '興趣';
+    return '其他';
+  } else {
+    // 如邑堂：格式「台灣｜轉換｜XXX」用 ｜ 分隔
+    if (t.includes('素材')) return '__SKIP__';
+    if (t.includes('互動') || t.includes('流量') || t.includes('觀看')) return '流量/互動/觀看';
+    if (t.includes('ASC')) return 'ASC';  // ASC 優先，含 KOL 的 ASC 活動歸 ASC
+    if (t.includes('KOL')) return 'KOL';
     if ((t.includes('台灣')||t.includes('TW')) && t.includes('興趣')) return '台灣興趣';
     if ((t.includes('海外')||t.includes('香港')||t.includes('HK')||t.includes('新加坡')||t.includes('西馬')) && t.includes('興趣')) return '海外興趣';
     if (t.includes('類似')) return '類似';
@@ -321,20 +331,6 @@ function classifyAdType(campaignName, clientIdx) {
     if ((t.includes('海外')||t.includes('香港')||t.includes('HK')||t.includes('新加坡')||t.includes('西馬')) && t.includes('RT')) return '海外RT';
     if (t.includes('興趣')) return '台灣興趣';
     if (t.includes('RT')) return '台灣RT';
-    return '其他';
-  } else {
-    // 如邑堂：格式 台灣｜轉換｜XXX 或 轉換-XXX
-    if (t.includes('素材')) return '__SKIP__';
-    if (t.includes('互動') || t.includes('流量') || t.includes('觀看')) return '流量/互動/觀看';
-    if (t.includes('KOL')) return 'KOL';
-    if (t.includes('ASC')) return 'ASC';
-    if ((t.includes('台灣')||t.includes('TW')) && t.includes('興趣')) return '台灣興趣';
-    if ((t.includes('海外')||t.includes('香港')||t.includes('HK')||t.includes('新加坡')||t.includes('西馬')) && t.includes('興趣')) return '海外興趣';
-    if (t.includes('類似')) return '類似';
-    if ((t.includes('台灣')||t.includes('TW')) && t.includes('RT')) return '台灣RT';
-    if ((t.includes('海外')||t.includes('香港')||t.includes('HK')||t.includes('新加坡')||t.includes('西馬')) && t.includes('RT')) return '海外RT';
-    if (t.includes('興趣')) return '興趣';
-    if (t.includes('RT')) return 'RT';
     return '其他';
   }
 }
@@ -500,7 +496,7 @@ function renderFlatTable(clientIdx, rawAds, period) {
   const detailEl = document.getElementById('creative-' + clientIdx);
   const { today: d1, yesterday: d2 } = getDateRange();
 
-  const typeOrder0 = ['流量/互動/觀看','ASC','KOL','台灣興趣','海外興趣','類似','台灣RT','海外RT','其他'];
+  const typeOrder0 = ['流量/互動/觀看','ASC','KOL','興趣','類似','RT','其他'];
   const typeOrder1 = ['流量/互動/觀看','ASC','KOL','台灣興趣','海外興趣','類似','台灣RT','海外RT','興趣','RT','其他'];
   const typeOrder = clientIdx === 0 ? typeOrder0 : typeOrder1;
   const typeColor = {
@@ -671,7 +667,7 @@ async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYester
   const groupsT = prepAds(adsToday);
   const groupsY = prepAds(adsYesterday);
 
-  const typeOrder0 = ['流量/互動/觀看','ASC','KOL','台灣興趣','海外興趣','類似','台灣RT','海外RT','其他'];
+  const typeOrder0 = ['流量/互動/觀看','ASC','KOL','興趣','類似','RT','其他'];
   const typeOrder1 = ['流量/互動/觀看','ASC','KOL','台灣興趣','海外興趣','類似','台灣RT','海外RT','興趣','RT','其他'];
   const typeOrder = clientIdx === 0 ? typeOrder0 : typeOrder1;
 
