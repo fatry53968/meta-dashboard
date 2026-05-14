@@ -444,6 +444,8 @@ function recommendAd(ad, maxSpend) {
 
 async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYesterday) {
   const el = document.getElementById(containerId);
+  const elSummary = document.getElementById('creative-summary-' + clientIdx);
+  const elDetail = document.getElementById('creative-' + clientIdx);
 
   function prepAds(rawAds) {
     if (!rawAds || rawAds.length === 0) return {};
@@ -517,7 +519,7 @@ async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYester
 
   const allTypes = typeOrder.filter(t => (groupsT[t]&&groupsT[t].length)||(groupsY[t]&&groupsY[t].length));
   if (allTypes.length === 0) {
-    el.innerHTML = '<div class="creative-loading" style="color:var(--text3)">無廣告資料（請確認 Token 有 ads_read 權限）</div>';
+    if(elSummary) elSummary.innerHTML = '<div class="creative-loading" style="color:var(--text3)">無廣告資料（請確認 Token 有 ads_read 權限）</div>';
     return;
   }
 
@@ -612,6 +614,36 @@ async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYester
       <td style="padding:8px 12px;font-size:11px;color:var(--text2);max-width:160px;line-height:1.4">${rec.reason}</td>
     </tr>`;
   }
+
+  if (elSummary) elSummary.innerHTML = `
+    <div style="font-size:11px;color:var(--text3);margin-bottom:6px">上排 = 昨天（${d1}）｜下排灰色 = 前天（${d2}）</div>
+    <div class="metrics-table" style="margin-bottom:16px">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:10px 14px;text-align:left;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">類型</th>
+          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">花費</th>
+          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">佔比</th>
+          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">加購</th>
+          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">購買</th>
+          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">CPA</th>
+          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">ROAS</th>
+          <th style="padding:10px 14px;text-align:center;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">ROAS變化</th>
+        </tr></thead>
+        <tbody style="background:var(--surface)">
+          ${summaryRows}
+          <tr style="background:var(--surface2);font-weight:600;border-top:1.5px solid var(--border2)">
+            <td style="padding:10px 14px">總計</td>
+            <td style="padding:10px 14px;text-align:right">${row2(fM(grandT.spend),fM(grandY.spend))}</td>
+            <td style="padding:10px 14px;text-align:right">${row2('100%','100%')}</td>
+            <td style="padding:10px 14px;text-align:right">${row2(fN(grandT.cart),fN(grandY.cart))}</td>
+            <td style="padding:10px 14px;text-align:right">${row2(fN(grandT.purchase),fN(grandY.purchase))}</td>
+            <td style="padding:10px 14px;text-align:right">${row2(fM(grandTCpa),fM(grandYCpa))}</td>
+            <td style="padding:10px 14px;text-align:right">${row2('<span style="color:'+rc(grandTRoas)+'">'+fX(grandTRoas)+'</span>','<span style="color:'+rc(grandYRoas)+'">'+fX(grandYRoas)+'</span>')}</td>
+            <td style="padding:10px 14px;text-align:center">${chg(grandTRoas,grandYRoas,false)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>`;
 
   if (elDetail) elDetail.innerHTML = `
     <div style="font-size:11px;color:var(--text3);margin-bottom:6px">上排 = 昨天（${d1}）｜下排灰色 = 前天（${d2}）｜左側圓點 = 廣告類型</div>
