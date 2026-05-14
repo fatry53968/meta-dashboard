@@ -308,21 +308,20 @@ function getExtendedDateRange(days) {
 function classifyAdType(campaignName, clientIdx) {
   const c = (campaignName||'');
   const t = c.toUpperCase();
+  // 兩個客戶共用：ASC 永遠最優先
+  if (t.includes('素材')) return '__SKIP__';
+  if (t.includes('互動') || t.includes('流量') || t.includes('觀看')) return '流量/互動/觀看';
+  if (t.includes('ASC')) return 'ASC';  // 最優先，不管後面有什麼關鍵字
+
   if (clientIdx === 0) {
-    // 全國麗園：格式「轉換 - XXX」用 - 分隔
-    if (t.includes('素材')) return '__SKIP__';
-    if (t.includes('互動') || t.includes('流量') || t.includes('觀看')) return '流量/互動/觀看';
-    if (t.includes('ASC')) return 'ASC';  // ASC 優先，避免被 KOL 搶走
+    // 全國麗園：格式「轉換 - XXX」
     if (t.includes('KOL')) return 'KOL';
     if (t.includes('類似')) return '類似';
     if (t.includes('RT')) return 'RT';
     if (t.includes('興趣')) return '興趣';
     return '其他';
   } else {
-    // 如邑堂：格式「台灣｜轉換｜XXX」用 ｜ 分隔
-    if (t.includes('素材')) return '__SKIP__';
-    if (t.includes('互動') || t.includes('流量') || t.includes('觀看')) return '流量/互動/觀看';
-    if (t.includes('ASC')) return 'ASC';  // ASC 優先，含 KOL 的 ASC 活動歸 ASC
+    // 如邑堂：格式「台灣｜轉換｜XXX」
     if (t.includes('KOL')) return 'KOL';
     if ((t.includes('台灣')||t.includes('TW')) && t.includes('興趣')) return '台灣興趣';
     if ((t.includes('海外')||t.includes('香港')||t.includes('HK')||t.includes('新加坡')||t.includes('西馬')) && t.includes('興趣')) return '海外興趣';
