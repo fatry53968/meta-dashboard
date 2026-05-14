@@ -287,12 +287,39 @@ async function fetchAdInsights(accountId, dateStart) {
   return allData;
 }
 
-function classifyAdType(campaignName, adsetName, adName) {
-  const txt = ((campaignName||'') + ' ' + (adsetName||'') + ' ' + (adName||'')).toUpperCase();
-  if (txt.includes('ASC') || txt.includes('ADVANTAGE') || txt.includes('SHOPPING')) return 'ASC';
-  if (txt.includes('RT') || txt.includes('再行銷') || txt.includes('RETARGET') || txt.includes('粉專') || txt.includes('看過網站') || txt.includes('看過') || txt.includes('購買')) return 'RT';
-  if (txt.includes('興趣') || txt.includes('常態') || txt.includes('INTEREST')) return '興趣受眾';
-  return '其他';
+// clientIdx: 0=全國麗園, 1=如邑堂
+function classifyAdType(campaignName, clientIdx) {
+  const c = (campaignName||'');
+  const t = c.toUpperCase();
+  if (clientIdx === 0) {
+    // 全國麗園：格式 台灣｜轉換｜XXX
+    if (t.includes('素材')) return '__SKIP__';
+    if (t.includes('互動') || t.includes('流量') || t.includes('觀看')) return '流量/互動/觀看';
+    if (t.includes('KOL')) return 'KOL';
+    if (t.includes('ASC')) return 'ASC';
+    if ((t.includes('台灣')||t.includes('TW')) && t.includes('興趣')) return '台灣興趣';
+    if ((t.includes('海外')||t.includes('香港')||t.includes('HK')||t.includes('新加坡')||t.includes('西馬')) && t.includes('興趣')) return '海外興趣';
+    if (t.includes('類似')) return '類似';
+    if ((t.includes('台灣')||t.includes('TW')) && t.includes('RT')) return '台灣RT';
+    if ((t.includes('海外')||t.includes('香港')||t.includes('HK')||t.includes('新加坡')||t.includes('西馬')) && t.includes('RT')) return '海外RT';
+    if (t.includes('興趣')) return '台灣興趣';
+    if (t.includes('RT')) return '台灣RT';
+    return '其他';
+  } else {
+    // 如邑堂：格式 台灣｜轉換｜XXX 或 轉換-XXX
+    if (t.includes('素材')) return '__SKIP__';
+    if (t.includes('互動') || t.includes('流量') || t.includes('觀看')) return '流量/互動/觀看';
+    if (t.includes('KOL')) return 'KOL';
+    if (t.includes('ASC')) return 'ASC';
+    if ((t.includes('台灣')||t.includes('TW')) && t.includes('興趣')) return '台灣興趣';
+    if ((t.includes('海外')||t.includes('香港')||t.includes('HK')||t.includes('新加坡')||t.includes('西馬')) && t.includes('興趣')) return '海外興趣';
+    if (t.includes('類似')) return '類似';
+    if ((t.includes('台灣')||t.includes('TW')) && t.includes('RT')) return '台灣RT';
+    if ((t.includes('海外')||t.includes('香港')||t.includes('HK')||t.includes('新加坡')||t.includes('西馬')) && t.includes('RT')) return '海外RT';
+    if (t.includes('興趣')) return '興趣';
+    if (t.includes('RT')) return 'RT';
+    return '其他';
+  }
 }
 
 function normalizeAdName(name) {
@@ -417,7 +444,7 @@ function recommendAd(ad, maxSpend) {
 
 async function buildCreativeAnalysis(clientIdx, containerId) {
   const el = document.getElementById(containerId);
-  el.innerHTML = '<div class="creative-loading">⏳ 載入廣告素材數據...</div>';
+  el.innerHTML = '<div class="creative-loading">⏳ 載入廣告分類數據...</div>';
   const client = CLIENTS[clientIdx];
   const { today } = getDateRange();
   let allAds = [];
@@ -426,16 +453,11 @@ async function buildCreativeAnalysis(clientIdx, containerId) {
       const ads = await fetchAdInsights(acc, today);
       allAds = allAds.concat(ads);
     } catch(e) {
-      el.innerHTML = `<div class="creative-loading" style="color:var(--red)">⚠️ API 錯誤（帳號 ${acc}）：${e.message}<br><small>請確認 Token 具有 ads_read 權限，或在 META 後台重新產生 Token</small></div>`;
+      el.innerHTML = `<div class="creative-loading" style="color:var(--red)">⚠️ API 錯誤（帳號 ${acc}）：${e.message}</div>`;
       return;
     }
   }
-  if (allAds.length === 0) {
-    el.innerHTML = '<div class="creative-loading" style="color:var(--text3)">無法取得廣告素材數據，請確認 Token 權限包含 ads_read</div>';
-    return;
-  }
 
-  // 過濾花費 > 0，然後合併複本
   allAds = allAds.filter(a => parseFloat(a.spend||0) > 0);
   allAds = mergeAdsByName(allAds);
   if (allAds.length === 0) {
@@ -443,80 +465,146 @@ async function buildCreativeAnalysis(clientIdx, containerId) {
     return;
   }
 
-  // 分類
-  const groups = { 'ASC': [], '興趣受眾': [], 'RT': [], '其他': [] };
-  const maxSpend = Math.max(...allAds.map(a => parseFloat(a.spend||0)));
+  // 定義類型順序（依客戶）
+  const typeOrder0 = ['流量/互動/觀看','ASC','KOL','台灣興趣','海外興趣','類似','台灣RT','海外RT','其他'];
+  const typeOrder1 = ['流量/互動/觀看','ASC','KOL','台灣興趣','海外興趣','類似','台灣RT','海外RT','興趣','RT','其他'];
+  const typeOrder = clientIdx === 0 ? typeOrder0 : typeOrder1;
+
+  // 分類（排除 __SKIP__）
+  const groups = {};
+  for (const t of typeOrder) groups[t] = [];
+  const grandTotalSpend_all = allAds.reduce((s,a)=>s+parseFloat(a.spend||0),0);
+
   for (const ad of allAds) {
-    const type = classifyAdType(ad.campaign_name, ad.adset_name, ad.ad_name);
+    const type = classifyAdType(ad.campaign_name, clientIdx);
+    if (type === '__SKIP__') continue;
+    if (!groups[type]) groups[type] = [];
     groups[type].push(ad);
   }
-  // 各群組按花費排序
-  for (const g of Object.values(groups)) g.sort((a,b) => parseFloat(b.spend||0) - parseFloat(a.spend||0));
 
-  const typeColors = { 'ASC': 'type-asc', '興趣受眾': 'type-int', 'RT': 'type-rt', '其他': 'type-other' };
-  const typeIcons = { 'ASC': '🤖', '興趣受眾': '🎯', 'RT': '🔁', '其他': '📋' };
+  // 計算每類型統計
+  const grandSpend = Object.values(groups).flat().reduce((s,a)=>s+parseFloat(a.spend||0),0);
+  const grandPurchase = Object.values(groups).flat().reduce((s,a)=>s+getAdVal(a,'purchase'),0);
+  const grandACV = Object.values(groups).flat().reduce((s,a)=>s+getAdACV(a,'purchase'),0);
+  const grandCart = Object.values(groups).flat().reduce((s,a)=>s+getAdVal(a,'add_to_cart'),0);
 
-  let html = '';
-  for (const [typeName, ads] of Object.entries(groups)) {
-    if (ads.length === 0) continue;
-    const cls = typeColors[typeName];
-    const icon = typeIcons[typeName];
-    const totalSpend = ads.reduce((s,a) => s + parseFloat(a.spend||0), 0);
-    const totalPurchase = ads.reduce((s,a) => s + getAdVal(a,'purchase'), 0);
-    const totalRoas = totalSpend > 0 ? ads.reduce((s,a) => s + getAdACV(a,'purchase'), 0) / totalSpend : 0;
+  // 類型顏色
+  const typeColor = {
+    'ASC':'#1565c0','KOL':'#6a1b9a','台灣興趣':'#e65100','海外興趣':'#bf360c',
+    '類似':'#2e7d32','台灣RT':'#c62828','海外RT':'#ad1457','RT':'#c62828',
+    '興趣':'#e65100','流量/互動/觀看':'#37474f','其他':'#546e7a'
+  };
 
-    html += `
-    <div class="creative-type-block">
-      <div class="creative-type-header ${cls}">
-        ${icon} ${typeName}
-        <span style="margin-left:auto;font-weight:400;font-size:12px">
-          ${ads.length} 組廣告｜總花費 NT$${Math.round(totalSpend).toLocaleString()}｜總購買 ${totalPurchase} 筆｜ROAS ${totalRoas.toFixed(2)}x
-        </span>
-      </div>
-      <table class="creative-table">
-        <thead><tr>
-          <th>廣告名稱</th>
-          <th>花費</th>
-          <th>CTR</th>
-          <th>加購</th>
-          <th>購買</th>
-          <th>CPA</th>
-          <th>ROAS</th>
-          <th>建議</th>
-          <th>原因</th>
-        </tr></thead>
-        <tbody>`;
+  // ── 總覽表格 ──
+  let summaryRows = '';
+  for (const typeName of typeOrder) {
+    const ads = groups[typeName];
+    if (!ads || ads.length === 0) continue;
+    const spend = ads.reduce((s,a)=>s+parseFloat(a.spend||0),0);
+    const purchase = ads.reduce((s,a)=>s+getAdVal(a,'purchase'),0);
+    const acv = ads.reduce((s,a)=>s+getAdACV(a,'purchase'),0);
+    const cart = ads.reduce((s,a)=>s+getAdVal(a,'add_to_cart'),0);
+    const cpa = purchase > 0 ? spend/purchase : 0;
+    const roas = spend > 0 ? acv/spend : 0;
+    const pct = grandSpend > 0 ? spend/grandSpend*100 : 0;
+    const roasColor = roas >= 3 ? 'var(--green)' : roas >= 2 ? 'var(--amber)' : roas > 0 ? 'var(--red)' : 'var(--text3)';
+    const color = typeColor[typeName]||'#546e7a';
+    summaryRows += `<tr>
+      <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:6px"></span><b>${typeName}</b></td>
+      <td style="text-align:right">NT$${Math.round(spend).toLocaleString()}</td>
+      <td style="text-align:right">${pct.toFixed(1)}%</td>
+      <td style="text-align:right">${cart > 0 ? cart : '-'}</td>
+      <td style="text-align:right">${purchase > 0 ? purchase : '-'}</td>
+      <td style="text-align:right">${cpa > 0 ? 'NT$'+Math.round(cpa).toLocaleString() : '-'}</td>
+      <td style="text-align:right;font-weight:600;color:${roasColor}">${roas > 0 ? roas.toFixed(2)+'x' : '-'}</td>
+    </tr>`;
+  }
 
-    for (const ad of ads) {
+  const grandCpa = grandPurchase > 0 ? grandSpend/grandPurchase : 0;
+  const grandRoas = grandSpend > 0 ? grandACV/grandSpend : 0;
+
+  // ── 各類型素材明細（可展開） ──
+  let detailHtml = '';
+  for (const typeName of typeOrder) {
+    const ads = groups[typeName];
+    if (!ads || ads.length === 0) continue;
+    const color = typeColor[typeName]||'#546e7a';
+    const domId = `detail-${clientIdx}-${typeName.replace(/[^a-zA-Z0-9]/g,'_')}`;
+    const maxSpend = Math.max(...ads.map(a=>parseFloat(a.spend||0)));
+    let adRows = '';
+    for (const ad of [...ads].sort((a,b)=>parseFloat(b.spend||0)-parseFloat(a.spend||0))) {
       const spend = parseFloat(ad.spend||0);
       const ctr = parseFloat(ad.ctr||0);
       const cart = getAdVal(ad,'add_to_cart');
       const purchase = getAdVal(ad,'purchase');
       const cpa = getAdCPA(ad,'purchase');
-      const roas = spend > 0 ? getAdACV(ad,'purchase') / spend : 0;
+      const roas = spend > 0 ? getAdACV(ad,'purchase')/spend : 0;
       const rec = recommendAd(ad, maxSpend);
-      const barW = Math.round(spend / maxSpend * 60);
-      const adName = (ad.ad_name || '未命名廣告').replace(/</g,'&lt;');
-
-      html += `<tr>
-        <td><div class="ad-name" title="${adName}">${adName.length > 28 ? adName.slice(0,28)+'…' : adName}</div>
-            <div style="font-size:10px;color:var(--text3);margin-top:2px">${(ad.adset_name||'').slice(0,30)}</div></td>
-        <td>
-          <div>NT$${Math.round(spend).toLocaleString()}</div>
-          <div class="spend-bar-wrap"><div class="spend-bar" style="width:${barW}px"></div></div>
-        </td>
-        <td>${ctr.toFixed(2)}%</td>
-        <td>${cart > 0 ? cart : '-'}</td>
-        <td>${purchase > 0 ? purchase : '-'}</td>
-        <td>${cpa > 0 ? 'NT$'+Math.round(cpa).toLocaleString() : '-'}</td>
-        <td>${roas > 0 ? roas.toFixed(2)+'x' : '-'}</td>
+      const barW = Math.round(spend/maxSpend*50);
+      const adName = (ad.ad_name||'未命名').replace(/</g,'&lt;');
+      adRows += `<tr>
+        <td><div class="ad-name" title="${adName}">${adName.length>30?adName.slice(0,30)+'…':adName}</div>
+            <div style="font-size:10px;color:var(--text3)">${(ad.adset_name||'').slice(0,35)}</div></td>
+        <td style="text-align:right">NT$${Math.round(spend).toLocaleString()}
+          <div class="spend-bar-wrap"><div class="spend-bar" style="width:${barW}px"></div></div></td>
+        <td style="text-align:right">${ctr.toFixed(2)}%</td>
+        <td style="text-align:right">${cart>0?cart:'-'}</td>
+        <td style="text-align:right">${purchase>0?purchase:'-'}</td>
+        <td style="text-align:right">${cpa>0?'NT$'+Math.round(cpa).toLocaleString():'-'}</td>
+        <td style="text-align:right;font-weight:600;color:${roas>=3?'var(--green)':roas>=2?'var(--amber)':roas>0?'var(--red)':'var(--text3)'}">${roas>0?roas.toFixed(2)+'x':'-'}</td>
         <td><span class="rec-badge ${rec.badge}">${rec.label}</span></td>
-        <td style="font-size:11px;color:var(--text2);max-width:200px;line-height:1.5">${rec.reason}</td>
+        <td style="font-size:11px;color:var(--text2);max-width:180px;line-height:1.4">${rec.reason}</td>
       </tr>`;
     }
-    html += `</tbody></table></div>`;
+    detailHtml += `
+    <div class="creative-type-block" style="margin-bottom:12px">
+      <div class="creative-type-header" style="background:${color}18;color:${color};cursor:pointer;user-select:none" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:6px"></span>
+        ${typeName} <span style="font-weight:400;font-size:12px;margin-left:8px">${ads.length} 組素材</span>
+        <span style="margin-left:auto;font-size:12px">▼ 展開素材明細</span>
+      </div>
+      <div id="${domId}" style="display:none">
+        <table class="creative-table">
+          <thead><tr>
+            <th>廣告名稱</th><th style="text-align:right">花費</th><th style="text-align:right">CTR</th>
+            <th style="text-align:right">加購</th><th style="text-align:right">購買</th>
+            <th style="text-align:right">CPA</th><th style="text-align:right">ROAS</th>
+            <th>建議</th><th>原因</th>
+          </tr></thead>
+          <tbody>${adRows}</tbody>
+        </table>
+      </div>
+    </div>`;
   }
-  el.innerHTML = html;
+
+  el.innerHTML = `
+    <div class="metrics-table" style="margin-bottom:16px">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:10px 14px;text-align:left;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">類型</th>
+          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">花費</th>
+          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">佔比</th>
+          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">加購</th>
+          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">購買</th>
+          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">CPA</th>
+          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">ROAS</th>
+        </tr></thead>
+        <tbody style="background:var(--surface)">
+          ${summaryRows}
+          <tr style="background:var(--surface2);font-weight:600;border-top:1.5px solid var(--border2)">
+            <td style="padding:10px 14px">總計</td>
+            <td style="padding:10px 14px;text-align:right">NT$${Math.round(grandSpend).toLocaleString()}</td>
+            <td style="padding:10px 14px;text-align:right">100%</td>
+            <td style="padding:10px 14px;text-align:right">${grandCart>0?grandCart:'-'}</td>
+            <td style="padding:10px 14px;text-align:right">${grandPurchase>0?grandPurchase:'-'}</td>
+            <td style="padding:10px 14px;text-align:right">${grandCpa>0?'NT$'+Math.round(grandCpa).toLocaleString():'-'}</td>
+            <td style="padding:10px 14px;text-align:right;color:${grandRoas>=3?'var(--green)':grandRoas>=2?'var(--amber)':grandRoas>0?'var(--red)':'var(--text3)'}">${grandRoas>0?grandRoas.toFixed(2)+'x':'-'}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:12px">點擊各類型列可展開該分類下的素材明細與建議 ↓</div>
+    ${detailHtml}`;
 }
 
 async function fetchInsights(accountId, dateStart, dateEnd) {
