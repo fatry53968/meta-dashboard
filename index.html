@@ -630,6 +630,12 @@ async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYester
         map[key]._campaign = ad.campaign_name;
       } else {
         const base = map[key];
+        // If new ad's campaign contains ASC, prefer it over existing campaign
+        const newCamp = (ad.campaign_name||'').toUpperCase();
+        const baseCamp = (base._campaign||'').toUpperCase();
+        if (newCamp.includes('ASC') && !baseCamp.includes('ASC')) {
+          base._campaign = ad.campaign_name;
+        }
         base.spend = String(parseFloat(base.spend||0) + parseFloat(ad.spend||0));
         base.impressions = String(parseInt(base.impressions||0) + parseInt(ad.impressions||0));
         base.clicks = String(parseInt(base.clicks||0) + parseInt(ad.clicks||0));
@@ -657,7 +663,7 @@ async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYester
     for (const [name, ad] of Object.entries(map)) {
       const campName = ad._campaign || ad.campaign_name || '';
       const type = classifyAdType(campName, clientIdx);
-      console.log('[debug] client='+clientIdx+' camp="'+campName+'" type='+type+' spend='+ad.spend);
+      if (parseFloat(ad.spend||0) > 100) console.log('[debug] client='+clientIdx+' camp="'+campName+'" type='+type+' spend='+ad.spend);
       if (type === '__SKIP__') continue;
       if (!result[type]) result[type] = [];
       result[type].push(ad);
