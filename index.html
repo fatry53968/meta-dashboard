@@ -272,11 +272,19 @@ function mergeInsights(arr) {
 const AD_FIELDS = 'ad_name,adset_name,campaign_name,spend,impressions,clicks,ctr,actions,action_values,cost_per_action_type,outbound_clicks';
 
 async function fetchAdInsights(accountId, dateStart) {
-  const url = `https://graph.facebook.com/v19.0/act_${accountId}/insights?fields=${AD_FIELDS}&time_range={"since":"${dateStart}","until":"${dateStart}"}&level=ad&limit=200&access_token=${TOKEN}`;
-  const res = await fetch(url);
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  return data.data || [];
+  // Fetch all pages
+  let allData = [];
+  let url = `https://graph.facebook.com/v19.0/act_${accountId}/insights?fields=${AD_FIELDS}&time_range={"since":"${dateStart}","until":"${dateStart}"}&level=ad&limit=200&access_token=${TOKEN}`;
+  let pageCount = 0;
+  while (url && pageCount < 5) {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message + ' (code:' + data.error.code + ')');
+    if (data.data) allData = allData.concat(data.data);
+    url = data.paging && data.paging.next ? data.paging.next : null;
+    pageCount++;
+  }
+  return allData;
 }
 
 function classifyAdType(campaignName, adsetName, adName) {
@@ -285,6 +293,61 @@ function classifyAdType(campaignName, adsetName, adName) {
   if (txt.includes('RT') || txt.includes('再行銷') || txt.includes('RETARGET') || txt.includes('粉專') || txt.includes('看過網站') || txt.includes('看過') || txt.includes('購買')) return 'RT';
   if (txt.includes('興趣') || txt.includes('常態') || txt.includes('INTEREST')) return '興趣受眾';
   return '其他';
+}
+
+function normalizeAdName(name) {
+  if (!name) return '未命名廣告';
+  // 移除所有「- 複本」變體（可能有多個，也可能有空格差異）
+  return name.replace(/(\s*-\s*複本)+\s*$/g, '').trim();
+}
+
+function mergeAdsByName(ads) {
+  const map = {};
+  for (const ad of ads) {
+    const key = normalizeAdName(ad.ad_name) + '||' + (ad.adset_name||'');
+    if (!map[key]) {
+      // Deep copy first occurrence
+      map[key] = JSON.parse(JSON.stringify(ad));
+      map[key].ad_name = normalizeAdName(ad.ad_name);
+      map[key]._count = 1;
+    } else {
+      const base = map[key];
+      // Sum numeric fields
+      base.spend = String(parseFloat(base.spend||0) + parseFloat(ad.spend||0));
+      base.impressions = String(parseInt(base.impressions||0) + parseInt(ad.impressions||0));
+      base.clicks = String(parseInt(base.clicks||0) + parseInt(ad.clicks||0));
+      base._count++;
+      // Merge actions arrays
+      const mergeArr = (field) => {
+        if (!ad[field]) return;
+        if (!base[field]) { base[field] = JSON.parse(JSON.stringify(ad[field])); return; }
+        for (const item of ad[field]) {
+          const existing = base[field].find(x => x.action_type === item.action_type);
+          if (existing) existing.value = String(parseFloat(existing.value||0) + parseFloat(item.value||0));
+          else base[field].push(JSON.parse(JSON.stringify(item)));
+        }
+      };
+      mergeArr('actions');
+      mergeArr('action_values');
+      mergeArr('outbound_clicks');
+      // Recalculate derived
+      const imp = parseInt(base.impressions||0);
+      const clk = parseInt(base.clicks||0);
+      base.ctr = imp > 0 ? String((clk / imp * 100).toFixed(4)) : '0';
+      // Recalculate cost_per_action_type
+      const spend = parseFloat(base.spend||0);
+      base.cost_per_action_type = [];
+      if (base.actions) {
+        for (const a of base.actions) {
+          const v = parseFloat(a.value||0);
+          if (v > 0 && spend > 0) {
+            base.cost_per_action_type.push({ action_type: a.action_type, value: String((spend/v).toFixed(2)) });
+          }
+        }
+      }
+    }
+  }
+  return Object.values(map);
 }
 
 function getAdVal(ad, key) {
@@ -362,15 +425,19 @@ async function buildCreativeAnalysis(clientIdx, containerId) {
     try {
       const ads = await fetchAdInsights(acc, today);
       allAds = allAds.concat(ads);
-    } catch(e) { /* skip */ }
+    } catch(e) {
+      el.innerHTML = `<div class="creative-loading" style="color:var(--red)">⚠️ API 錯誤（帳號 ${acc}）：${e.message}<br><small>請確認 Token 具有 ads_read 權限，或在 META 後台重新產生 Token</small></div>`;
+      return;
+    }
   }
   if (allAds.length === 0) {
     el.innerHTML = '<div class="creative-loading" style="color:var(--text3)">無法取得廣告素材數據，請確認 Token 權限包含 ads_read</div>';
     return;
   }
 
-  // 過濾花費 > 0
+  // 過濾花費 > 0，然後合併複本
   allAds = allAds.filter(a => parseFloat(a.spend||0) > 0);
+  allAds = mergeAdsByName(allAds);
   if (allAds.length === 0) {
     el.innerHTML = '<div class="creative-loading" style="color:var(--text3)">昨天無花費廣告</div>';
     return;
@@ -808,7 +875,7 @@ async function loadClient(idx) {
 
 function loadAllData() {
   const { today } = getDateRange();
-  const {today:d1,yesterday:d2}=getDateRange(); document.getElementById('todayBadge').textContent = d2+' vs '+d1;
+  const {today:d1,yesterday:d2}=getDateRange(); document.getElementById('todayBadge').textContent = '昨 '+d1+' / 前 '+d2;
   loadClient(0);
   loadClient(1);
 }
