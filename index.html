@@ -956,7 +956,6 @@ function buildTopKPIs(t, y) {
       <div class="kpi-row">
         <div class="kpi"><div class="kpi-label">ROAS</div><div class="kpi-value">${fmt(roas_t,'x')}</div></div>
         <div class="kpi"><div class="kpi-label">CTR</div><div class="kpi-value">${fmt(t?.ctr,'pct')}</div></div>
-        <div class="kpi"><div class="kpi-label">加購次數</div><div class="kpi-value">${fmt(getVal(t,'add_to_cart'))}</div></div>
       </div>
     </div>
     <div class="day-card">
@@ -969,7 +968,6 @@ function buildTopKPIs(t, y) {
       <div class="kpi-row">
         <div class="kpi"><div class="kpi-label">ROAS</div><div class="kpi-value">${fmt(roas_y,'x')}</div></div>
         <div class="kpi"><div class="kpi-label">CTR</div><div class="kpi-value">${fmt(y?.ctr,'pct')}</div></div>
-        <div class="kpi"><div class="kpi-label">加購次數</div><div class="kpi-value">${fmt(getVal(y,'add_to_cart'))}</div></div>
       </div>
     </div>
   </div>`;
