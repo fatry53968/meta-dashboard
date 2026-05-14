@@ -625,6 +625,7 @@ async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYester
       if (parseFloat(ad.spend||0) <= 0) continue;
       const type = classifyAdType(ad.campaign_name, clientIdx);
       if (type === '__SKIP__') continue;
+      if (type === 'ASC') console.log('[ASC] client='+clientIdx+' camp="'+ad.campaign_name+'" spend='+ad.spend+' ad="'+(ad.ad_name||'').slice(0,30)+'"');
       const key = type + '||' + normalizeAdName(ad.ad_name);
       if (!result[type]) result[type] = [];
       const existing = result[type].find(x => x._key === key);
