@@ -654,7 +654,9 @@ async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYester
     }
     const result = {};
     for (const [name, ad] of Object.entries(map)) {
-      const type = classifyAdType(ad._campaign || ad.campaign_name, clientIdx);
+      const campName = ad._campaign || ad.campaign_name || '';
+      const type = classifyAdType(campName, clientIdx);
+      console.log('[debug] client='+clientIdx+' camp="'+campName+'" type='+type+' spend='+ad.spend);
       if (type === '__SKIP__') continue;
       if (!result[type]) result[type] = [];
       result[type].push(ad);
