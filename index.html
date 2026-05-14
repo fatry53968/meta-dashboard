@@ -127,6 +127,12 @@
   .creative-loading { padding: 20px; text-align: center; color: var(--text2); font-size: 13px; }
   .spend-bar-wrap { width: 60px; height: 6px; background: var(--surface2); border-radius: 3px; display: inline-block; vertical-align: middle; }
   .spend-bar { height: 6px; border-radius: 3px; background: #1877f2; }
+
+  .period-toggle { display: flex; gap: 6px; margin-bottom: 12px; }
+  .period-btn { padding: 5px 14px; font-size: 12px; font-weight: 500; border: 0.5px solid var(--border2); border-radius: 20px; cursor: pointer; background: transparent; color: var(--text2); transition: all 0.15s; }
+  .period-btn.active { background: #1877f2; color: #fff; border-color: #1877f2; }
+  .period-btn:hover:not(.active) { background: var(--surface2); }
+  .period-loading { padding: 16px; text-align: center; color: var(--text2); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -271,10 +277,10 @@ function mergeInsights(arr) {
 
 const AD_FIELDS = 'ad_name,adset_name,campaign_name,spend,impressions,clicks,ctr,actions,action_values,cost_per_action_type,outbound_clicks';
 
-async function fetchAdInsights(accountId, dateStart) {
-  // Fetch all pages
+async function fetchAdInsights(accountId, dateStart, dateEnd) {
+  const end = dateEnd || dateStart;
   let allData = [];
-  let url = `https://graph.facebook.com/v19.0/act_${accountId}/insights?fields=${AD_FIELDS}&time_range={"since":"${dateStart}","until":"${dateStart}"}&level=ad&limit=200&access_token=${TOKEN}`;
+  let url = `https://graph.facebook.com/v19.0/act_${accountId}/insights?fields=${AD_FIELDS}&time_range={"since":"${dateStart}","until":"${end}"}&level=ad&limit=200&access_token=${TOKEN}`;
   let pageCount = 0;
   while (url && pageCount < 5) {
     const res = await fetch(url);
@@ -285,6 +291,17 @@ async function fetchAdInsights(accountId, dateStart) {
     pageCount++;
   }
   return allData;
+}
+
+function getExtendedDateRange(days) {
+  const now = new Date();
+  const fmt = d => {
+    const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  };
+  const end = new Date(now); end.setDate(end.getDate()-1); // yesterday
+  const start = new Date(now); start.setDate(start.getDate()-days);
+  return { since: fmt(start), until: fmt(end) };
 }
 
 // clientIdx: 0=全國麗園, 1=如邑堂
@@ -440,6 +457,164 @@ function recommendAd(ad, maxSpend) {
     return { badge: 'rec-watch', label: '觀察中', reason: `CTR ${ctr.toFixed(2)}% 偏低，花費尚不足以判斷，再跑 1-2 天` };
   }
   return { badge: 'rec-watch', label: '持續觀察', reason: '數據尚在學習期，維持預算繼續觀察' };
+}
+
+// Store per-client period ad data cache
+const _periodCache = {};
+
+async function loadDetailPeriod(clientIdx, period) {
+  const detailEl = document.getElementById('creative-' + clientIdx);
+  const btns = document.querySelectorAll(`.period-btn[data-client="${clientIdx}"]`);
+  btns.forEach(b => b.classList.toggle('active', b.dataset.period === period));
+
+  if (_periodCache[clientIdx + '_' + period]) {
+    renderFlatTable(clientIdx, _periodCache[clientIdx + '_' + period], period);
+    return;
+  }
+
+  detailEl.innerHTML = '<div class="period-loading">⏳ 載入' + (period==='7d'?'近7天':period==='14d'?'近14天':'昨天') + '數據...</div>';
+
+  const client = CLIENTS[clientIdx];
+  let allAds = [];
+  try {
+    let since, until;
+    if (period === '7d') {
+      const r = getExtendedDateRange(7); since = r.since; until = r.until;
+    } else if (period === '14d') {
+      const r = getExtendedDateRange(14); since = r.since; until = r.until;
+    } else {
+      const { today } = getDateRange(); since = today; until = today;
+    }
+    for (const acc of client.accounts) {
+      const ads = await fetchAdInsights(acc, since, until);
+      allAds = allAds.concat(ads);
+    }
+    _periodCache[clientIdx + '_' + period] = allAds;
+    renderFlatTable(clientIdx, allAds, period);
+  } catch(e) {
+    detailEl.innerHTML = `<div class="period-loading" style="color:var(--red)">⚠️ 載入失敗：${e.message}</div>`;
+  }
+}
+
+function renderFlatTable(clientIdx, rawAds, period) {
+  const detailEl = document.getElementById('creative-' + clientIdx);
+  const { today: d1, yesterday: d2 } = getDateRange();
+
+  const typeOrder0 = ['流量/互動/觀看','ASC','KOL','台灣興趣','海外興趣','類似','台灣RT','海外RT','其他'];
+  const typeOrder1 = ['流量/互動/觀看','ASC','KOL','台灣興趣','海外興趣','類似','台灣RT','海外RT','興趣','RT','其他'];
+  const typeOrder = clientIdx === 0 ? typeOrder0 : typeOrder1;
+  const typeColor = {
+    'ASC':'#1565c0','KOL':'#6a1b9a','台灣興趣':'#e65100','海外興趣':'#bf360c',
+    '類似':'#2e7d32','台灣RT':'#c62828','海外RT':'#ad1457','RT':'#c62828',
+    '興趣':'#e65100','流量/互動/觀看':'#37474f','其他':'#546e7a'
+  };
+
+  // Merge by ad_name only
+  const filtered = (rawAds||[]).filter(a => parseFloat(a.spend||0) > 0);
+  const map = {};
+  for (const ad of filtered) {
+    const key = normalizeAdName(ad.ad_name);
+    if (!map[key]) {
+      map[key] = JSON.parse(JSON.stringify(ad));
+      map[key].ad_name = key;
+      map[key]._campaign = ad.campaign_name;
+    } else {
+      const base = map[key];
+      base.spend = String(parseFloat(base.spend||0) + parseFloat(ad.spend||0));
+      base.impressions = String(parseInt(base.impressions||0) + parseInt(ad.impressions||0));
+      base.clicks = String(parseInt(base.clicks||0) + parseInt(ad.clicks||0));
+      const mergeArr = (field) => {
+        if (!ad[field]) return;
+        if (!base[field]) { base[field] = JSON.parse(JSON.stringify(ad[field])); return; }
+        for (const item of ad[field]) {
+          const ex = base[field].find(x => x.action_type === item.action_type);
+          if (ex) ex.value = String(parseFloat(ex.value||0) + parseFloat(item.value||0));
+          else base[field].push(JSON.parse(JSON.stringify(item)));
+        }
+      };
+      mergeArr('actions'); mergeArr('action_values'); mergeArr('outbound_clicks');
+      const imp = parseInt(base.impressions||0), clk = parseInt(base.clicks||0);
+      base.ctr = imp > 0 ? String((clk/imp*100).toFixed(4)) : '0';
+      const spend = parseFloat(base.spend||0);
+      base.cost_per_action_type = [];
+      if (base.actions) for (const a of base.actions) {
+        const v = parseFloat(a.value||0);
+        if (v > 0 && spend > 0) base.cost_per_action_type.push({action_type:a.action_type, value:String((spend/v).toFixed(2))});
+      }
+    }
+  }
+
+  // Classify + sort by spend
+  const classifiedAds = Object.values(map).map(ad => ({
+    ...ad,
+    _type: classifyAdType(ad._campaign || ad.campaign_name, clientIdx)
+  })).filter(ad => ad._type !== '__SKIP__')
+    .sort((a,b) => parseFloat(b.spend||0) - parseFloat(a.spend||0));
+
+  if (classifiedAds.length === 0) {
+    detailEl.innerHTML = '<div class="period-loading" style="color:var(--text3)">此期間無廣告花費</div>';
+    return;
+  }
+
+  const globalMax = Math.max(...classifiedAds.map(a=>parseFloat(a.spend||0)), 1);
+
+  function rc(r){ return r>=3?'var(--green)':r>=2?'var(--amber)':r>0?'var(--red)':'var(--text3)'; }
+  function fM(n){ return n>0?'NT$'+Math.round(n).toLocaleString():'-'; }
+  function fX(n){ return n>0?n.toFixed(2)+'x':'-'; }
+
+  let periodLabel = period==='7d'?`近7天（${getExtendedDateRange(7).since} ～ ${getExtendedDateRange(7).until}）`:
+                    period==='14d'?`近14天（${getExtendedDateRange(14).since} ～ ${getExtendedDateRange(14).until}）`:
+                    `昨天（${d1}）`;
+
+  let rows = '';
+  for (const ad of classifiedAds) {
+    const color = typeColor[ad._type]||'#546e7a';
+    const spend = parseFloat(ad.spend||0);
+    const ctr = parseFloat(ad.ctr||0);
+    const cart = getAdVal(ad,'add_to_cart');
+    const purchase = getAdVal(ad,'purchase');
+    const cpa = getAdCPA(ad,'purchase');
+    const roas = spend>0 ? getAdACV(ad,'purchase')/spend : 0;
+    const rec = recommendAd(ad, globalMax);
+    const barW = Math.round(spend/globalMax*60);
+    const dispName = (ad.ad_name||'').length>38?(ad.ad_name||'').slice(0,38)+'…':(ad.ad_name||'未命名');
+    rows += `<tr>
+      <td style="padding:8px 12px">
+        <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};margin-right:5px;vertical-align:middle"></span>
+        <span style="font-size:10px;color:${color};font-weight:500">${ad._type}</span>
+        <div class="ad-name" style="margin-top:2px" title="${(ad.ad_name||'').replace(/</g,'&lt;')}">${dispName}</div>
+      </td>
+      <td style="padding:8px 12px;text-align:right">
+        NT$${Math.round(spend).toLocaleString()}
+        <div class="spend-bar-wrap"><div class="spend-bar" style="width:${barW}px"></div></div>
+      </td>
+      <td style="padding:8px 12px;text-align:right">${ctr>0?ctr.toFixed(2)+'%':'-'}</td>
+      <td style="padding:8px 12px;text-align:right">${cart>0?cart:'-'}</td>
+      <td style="padding:8px 12px;text-align:right">${purchase>0?purchase:'-'}</td>
+      <td style="padding:8px 12px;text-align:right">${fM(cpa)}</td>
+      <td style="padding:8px 12px;text-align:right;font-weight:600;color:${rc(roas)}">${fX(roas)}</td>
+      <td style="padding:8px 12px"><span class="rec-badge ${rec.badge}">${rec.label}</span></td>
+      <td style="padding:8px 12px;font-size:11px;color:var(--text2);max-width:160px;line-height:1.4">${rec.reason}</td>
+    </tr>`;
+  }
+
+  detailEl.innerHTML = `
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px">統計區間：${periodLabel}｜共 ${classifiedAds.length} 組素材（依花費排序）</div>
+    <div class="metrics-table">
+      <table class="creative-table">
+        <thead><tr>
+          <th>廣告名稱</th>
+          <th style="text-align:right">花費</th>
+          <th style="text-align:right">CTR</th>
+          <th style="text-align:right">加購</th>
+          <th style="text-align:right">購買</th>
+          <th style="text-align:right">CPA</th>
+          <th style="text-align:right">ROAS</th>
+          <th>建議</th><th>原因</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
 }
 
 async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYesterday) {
@@ -998,11 +1173,19 @@ function renderClient(idx, todayData, yesterdayData, adsToday, adsYesterday) {
         <div class="ai-loading">準備分析...</div>
       </div>
     </div>
-    <div class="section-title" style="margin-top:24px">素材明細（依類型展開）</div>
-    <div id="creative-${idx}"></div>`;
+    <div class="section-title" style="margin-top:24px">素材明細</div>
+    <div class="period-toggle">
+      <button class="period-btn active" data-client="${idx}" data-period="1d" onclick="loadDetailPeriod(${idx},'1d')">昨天</button>
+      <button class="period-btn" data-client="${idx}" data-period="7d" onclick="loadDetailPeriod(${idx},'7d')">近 7 天</button>
+      <button class="period-btn" data-client="${idx}" data-period="14d" onclick="loadDetailPeriod(${idx},'14d')">近 14 天</button>
+    </div>
+    <div id="creative-${idx}"><div class="period-loading">載入中...</div></div>`;
 
   buildAIAnalysis(CLIENTS[idx].name, todayData, yesterdayData, `ai-content-${idx}`);
   buildCreativeAnalysis(idx, `creative-${idx}`, adsToday, adsYesterday);
+  // Init flat detail table with yesterday data (adsToday = yesterday in our date logic)
+  _periodCache[idx + '_1d'] = adsToday;
+  renderFlatTable(idx, adsToday, '1d');
 }
 
 async function loadClient(idx) {
