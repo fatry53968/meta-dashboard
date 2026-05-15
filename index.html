@@ -1132,3 +1132,44 @@ function buildAIAnalysis(clientName, t, y, containerId, clientIdx, adsToday, ads
       <div class="action-list">${strategyRows || '<div style="color:var(--text3);font-size:13px">廣告數據載入中...</div>'}</div>
     </div>`;
 }
+
+
+async function loadClient(idx) {
+  const dot = document.getElementById(`status-dot-${idx}`);
+  const txt = document.getElementById(`status-text-${idx}`);
+  const errEl = document.getElementById(`error-${idx}`);
+  dot.className = 'status-dot loading';
+  txt.textContent = '資料載入中...';
+  errEl.innerHTML = '';
+
+  try {
+    const data = await fetchClientData(idx);
+    const { today, yesterday } = data;
+    dot.className = 'status-dot ok';
+    txt.textContent = `資料已更新`;
+    renderClient(idx, today, yesterday, data.adsToday||[], data.adsYesterday||[]);
+  } catch(e) {
+    dot.className = 'status-dot error';
+    txt.textContent = '資料載入失敗';
+    errEl.innerHTML = `<div class="error-msg">⚠️ 無法取得資料：${e.message}</div>`;
+  }
+}
+
+function loadAllData() {
+  const {today:d1,yesterday:d2}=getDateRange(); document.getElementById('todayBadge').textContent = '昨 '+d1+' / 前 '+d2;
+  loadClient(0);
+  loadClient(1);
+}
+
+function switchClient(idx) {
+  document.querySelectorAll('.client-tab').forEach((t,i) => t.classList.toggle('active', i===idx));
+  document.querySelectorAll('.client-panel').forEach((p,i) => p.classList.toggle('active', i===idx));
+}
+
+loadAllData();
+</script>
+
+<div class="footer">資料來源：META Marketing API｜每次重新整理抓取最新數據</div>
+
+</body>
+</html>
