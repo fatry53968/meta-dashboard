@@ -730,14 +730,11 @@ async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYester
     const pctY = grandY.spend>0?sy.spend/grandY.spend*100:0;
     summaryRows += `<tr>
       <td style="padding:9px 14px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:6px"></span><b>${typeName}</b></td>
-      <td style="padding:9px 14px;text-align:right">${row2(fM(st.spend),fM(sy.spend))}</td>
+      <td style="padding:9px 14px;text-align:right">${fM(st.spend)}<br><small style="color:var(--text3)">${fM(sy.spend)}</small><br>${chg(st.spend,sy.spend,false)}</td>
       <td style="padding:9px 14px;text-align:right">${row2(fP(pctT),fP(pctY))}</td>
       <td style="padding:9px 14px;text-align:right">${row2(fN(st.purchase),fN(sy.purchase))}</td>
-      <td style="padding:9px 14px;text-align:right">${row2(fM(st.cpa),fM(sy.cpa))}</td>
-      <td style="padding:9px 14px;text-align:right;font-weight:600">${row2('<span style="color:'+rc(st.roas)+'">'+fX(st.roas)+'</span>','<span style="color:'+rc(sy.roas)+'">'+fX(sy.roas)+'</span>')}</td>
-      <td style="padding:9px 14px;text-align:center">${chg(st.spend,sy.spend,false)}</td>
-      <td style="padding:9px 14px;text-align:center">${chg(st.cpa,sy.cpa,true)}</td>
-      <td style="padding:9px 14px;text-align:center">${chg(st.roas,sy.roas,false)}</td>
+      <td style="padding:9px 14px;text-align:right">${fM(st.cpa)}<br><small style="color:var(--text3)">${fM(sy.cpa)}</small><br>${chg(st.cpa,sy.cpa,true)}</td>
+      <td style="padding:9px 14px;text-align:right;font-weight:600"><span style="color:${rc(st.roas)}">${fX(st.roas)}</span><br><small style="color:${rc(sy.roas)}">${fX(sy.roas)}</small><br>${chg(st.roas,sy.roas,false)}</td>
     </tr>`;
   }
 
@@ -794,27 +791,21 @@ async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYester
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="background:var(--surface2)">
           <th style="padding:10px 14px;text-align:left;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">類型</th>
-          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">花費</th>
+          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">花費<br><small style="font-weight:400">昨／前天／變化</small></th>
           <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">佔比</th>
           <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">購買</th>
-          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">CPA</th>
-          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">ROAS</th>
-          <th style="padding:10px 14px;text-align:center;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">花費變化</th>
-          <th style="padding:10px 14px;text-align:center;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">CPA變化</th>
-          <th style="padding:10px 14px;text-align:center;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">ROAS變化</th>
+          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">CPA<br><small style="font-weight:400">昨／前天／變化</small></th>
+          <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">ROAS<br><small style="font-weight:400">昨／前天／變化</small></th>
         </tr></thead>
         <tbody style="background:var(--surface)">
           ${summaryRows}
           <tr style="background:var(--surface2);font-weight:600;border-top:1.5px solid var(--border2)">
             <td style="padding:10px 14px">總計</td>
-            <td style="padding:10px 14px;text-align:right">${row2(fM(grandT.spend),fM(grandY.spend))}</td>
+            <td style="padding:10px 14px;text-align:right">${fM(grandT.spend)}<br><small style="color:var(--text3)">${fM(grandY.spend)}</small><br>${chg(grandT.spend,grandY.spend,false)}</td>
             <td style="padding:10px 14px;text-align:right">${row2('100%','100%')}</td>
             <td style="padding:10px 14px;text-align:right">${row2(fN(grandT.purchase),fN(grandY.purchase))}</td>
-            <td style="padding:10px 14px;text-align:right">${row2(fM(grandTCpa),fM(grandYCpa))}</td>
-            <td style="padding:10px 14px;text-align:right">${row2('<span style="color:'+rc(grandTRoas)+'">'+fX(grandTRoas)+'</span>','<span style="color:'+rc(grandYRoas)+'">'+fX(grandYRoas)+'</span>')}</td>
-            <td style="padding:10px 14px;text-align:center">${chg(grandT.spend,grandY.spend,false)}</td>
-            <td style="padding:10px 14px;text-align:center">${chg(grandTCpa,grandYCpa,true)}</td>
-            <td style="padding:10px 14px;text-align:center">${chg(grandTRoas,grandYRoas,false)}</td>
+            <td style="padding:10px 14px;text-align:right">${fM(grandTCpa)}<br><small style="color:var(--text3)">${fM(grandYCpa)}</small><br>${chg(grandTCpa,grandYCpa,true)}</td>
+            <td style="padding:10px 14px;text-align:right;font-weight:600"><span style="color:${rc(grandTRoas)}">${fX(grandTRoas)}</span><br><small style="color:${rc(grandYRoas)}">${fX(grandYRoas)}</small><br>${chg(grandTRoas,grandYRoas,false)}</td>
           </tr>
         </tbody>
       </table>
