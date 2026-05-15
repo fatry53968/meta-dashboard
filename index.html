@@ -966,154 +966,153 @@ function buildTopKPIs(t, y) {
   </div>`;
 }
 
-function buildAIAnalysis(clientName, t, y, containerId) {
+function buildAIAnalysis(clientName, t, y, containerId, clientIdx, adsToday, adsYesterday) {
   const el = document.getElementById(containerId);
 
-  const spend_t = t?.spend||0, spend_y = y?.spend||0;
-  const cpa_t = getCPA(t,'purchase'), cpa_y = getCPA(y,'purchase');
-  const roas_t = spend_t>0 ? getACV(t,'purchase')/spend_t : 0;
-  const roas_y = spend_y>0 ? getACV(y,'purchase')/spend_y : 0;
-  const purchase_t = getVal(t,'purchase'), purchase_y = getVal(y,'purchase');
-  const cart_t = getVal(t,'add_to_cart'), cart_y = getVal(y,'add_to_cart');
-  const ctr_t = parseFloat(t?.ctr||0), ctr_y = parseFloat(y?.ctr||0);
-  const checkout_t = getVal(t,'initiate_checkout'), checkout_y = getVal(y,'initiate_checkout');
-  const outbound_t = getOutbound(t), outbound_y = getOutbound(y);
-  const video_t = getVideoVal(t,'video_play_actions'), video_y = getVideoVal(y,'video_play_actions');
-  const v100_t = getVideoVal(t,'video_p100_watched_actions'), v100_y = getVideoVal(y,'video_p100_watched_actions');
+  // ── Build grouped data from ad-level (same logic as prepAds) ──
+  function sumType(rawAds, type) {
+    if (!rawAds || rawAds.length === 0) return {spend:0,purchase:0,acv:0,cart:0,cpa:0,roas:0};
+    let spend=0,purchase=0,acv=0,cart=0;
+    for (const ad of rawAds) {
+      if (parseFloat(ad.spend||0) <= 0) continue;
+      const t2 = classifyAdType(ad.campaign_name, clientIdx);
+      if (t2 !== type) continue;
+      spend += parseFloat(ad.spend||0);
+      purchase += getAdVal(ad,'purchase');
+      acv += getAdACV(ad,'purchase');
+      cart += getAdVal(ad,'add_to_cart');
+    }
+    return {spend, purchase, acv, cart,
+      cpa: purchase>0 ? spend/purchase : 0,
+      roas: spend>0 ? acv/spend : 0};
+  }
 
-  // 只有昨天有數據時才以昨天為基準分析
-  const hasYest = spend_y > 0;
-  const hasToday = spend_t > 0;
+  // Get types that have spend
+  const typeOrder0 = ['ASC','KOL','興趣','類似','RT'];
+  const typeOrder1 = ['ASC','KOL','台灣興趣','海外興趣','類似','台灣RT','海外RT'];
+  const types = clientIdx === 0 ? typeOrder0 : typeOrder1;
 
-  // ── 計算各項變化率 ──
-  const pctChange = (a, b) => b > 0 ? ((a - b) / b * 100) : null;
-  const cpaPct = pctChange(cpa_t, cpa_y);
-  const roasPct = pctChange(roas_t, roas_y);
-  const ctrPct = pctChange(ctr_t, ctr_y);
-  const cartPct = pctChange(cart_t, cart_y);
-  const checkoutPct = pctChange(checkout_t, checkout_y);
-  const purchasePct = pctChange(purchase_t, purchase_y);
-  const convRate_t = outbound_t > 0 ? (purchase_t / outbound_t * 100) : 0;
-  const convRate_y = outbound_y > 0 ? (purchase_y / outbound_y * 100) : 0;
-  const v100Rate_t = video_t > 0 ? (v100_t / video_t * 100) : 0;
-  const v100Rate_y = video_y > 0 ? (v100_y / video_y * 100) : 0;
+  // Total from ad-level data
+  function totalFromAds(rawAds) {
+    if (!rawAds || rawAds.length === 0) return {spend:0,purchase:0,acv:0,cart:0,cpa:0,roas:0,ctr:0};
+    let spend=0,purchase=0,acv=0,cart=0,clicks=0,impressions=0;
+    for (const ad of rawAds) {
+      if (parseFloat(ad.spend||0) <= 0) continue;
+      const t2 = classifyAdType(ad.campaign_name, clientIdx);
+      if (t2 === '__SKIP__') continue;
+      spend += parseFloat(ad.spend||0);
+      purchase += getAdVal(ad,'purchase');
+      acv += getAdACV(ad,'purchase');
+      cart += getAdVal(ad,'add_to_cart');
+      clicks += parseInt(ad.clicks||0);
+      impressions += parseInt(ad.impressions||0);
+    }
+    return {spend, purchase, acv, cart,
+      cpa: purchase>0 ? spend/purchase : 0,
+      roas: spend>0 ? acv/spend : 0,
+      ctr: impressions>0 ? clicks/impressions*100 : 0};
+  }
+
+  const totT = totalFromAds(adsToday);
+  const totY = totalFromAds(adsYesterday);
+
+  const spend_t = totT.spend, spend_y = totY.spend;
+  const cpa_t = totT.cpa, cpa_y = totY.cpa;
+  const roas_t = totT.roas, roas_y = totY.roas;
+  const purchase_t = totT.purchase, purchase_y = totY.purchase;
+  const cart_t = totT.cart, cart_y = totY.cart;
+  const ctr_t = totT.ctr, ctr_y = totY.ctr;
+
+  // Per-type data for strategy recommendations
+  const typeDataT = {}, typeDataY = {};
+  for (const tp of types) {
+    typeDataT[tp] = sumType(adsToday, tp);
+    typeDataY[tp] = sumType(adsYesterday, tp);
+  }
 
   // ── CPA 分析 ──
   let cpaAnalysis = '';
-  if (!hasYest) {
-    cpaAnalysis = '昨天無花費數據，無法進行 CPA 比較分析。請確認廣告是否昨天才開始投放。';
-  } else if (!hasToday) {
-    cpaAnalysis = `昨天 CPA 為 NT$${Math.round(cpa_y)}，今天數據尚未產生（可能廣告剛開始跑，或數據延遲）。建議下午 2 點後再重新整理查看。`;
-  } else if (cpaPct === null) {
-    cpaAnalysis = `今天 CPA NT$${Math.round(cpa_t)}，昨天無購買數據可比較。`;
+  const cpaPct = cpa_y > 0 ? ((cpa_t - cpa_y) / cpa_y * 100) : null;
+  if (!spend_y) {
+    cpaAnalysis = '前天無花費數據，無法進行 CPA 比較分析。';
+  } else if (!spend_t) {
+    cpaAnalysis = `昨天 CPA 為 NT$${Math.round(cpa_y)}，今天數據尚未產生，建議下午重新整理查看。`;
   } else {
     const reasons = [];
-    if (ctrPct !== null && ctrPct < -10) reasons.push(`CTR 下滑 ${Math.abs(ctrPct).toFixed(1)}%，素材吸引力降低，點擊成本上升`);
-    if (ctrPct !== null && ctrPct > 10) reasons.push(`CTR 提升 ${ctrPct.toFixed(1)}%，素材表現佳，更多低成本點擊進入`);
-    const convPct = pctChange(convRate_t, convRate_y);
-    if (convPct !== null && convPct < -10) reasons.push(`落地頁轉換率下滑 ${Math.abs(convPct).toFixed(1)}%，流量品質或頁面體驗需檢查`);
-    if (convPct !== null && convPct > 10) reasons.push(`落地頁轉換率提升 ${convPct.toFixed(1)}%，購買意圖強的受眾比例增加`);
-    if (checkoutPct !== null && checkoutPct < -15) reasons.push(`結帳次數下降 ${Math.abs(checkoutPct).toFixed(1)}%，購買漏斗中段流失加重`);
-    if (reasons.length === 0) reasons.push('各漏斗指標變化在正常範圍內，CPA 波動屬正常競標機制浮動');
-    const direction = cpaPct > 0 ? `上升 ${cpaPct.toFixed(1)}%（NT$${Math.round(cpa_y)} → NT$${Math.round(cpa_t)}）` : `下降 ${Math.abs(cpaPct).toFixed(1)}%（NT$${Math.round(cpa_y)} → NT$${Math.round(cpa_t)}）`;
-    cpaAnalysis = `CPA ${direction}。主因：${reasons.join('；')}。`;
+    const ctrPct = ctr_y > 0 ? (ctr_t - ctr_y) / ctr_y * 100 : null;
+    if (ctrPct !== null && ctrPct < -10) reasons.push(`CTR 下滑 ${Math.abs(ctrPct).toFixed(1)}%，素材吸引力降低`);
+    if (ctrPct !== null && ctrPct > 10) reasons.push(`CTR 提升 ${ctrPct.toFixed(1)}%，素材表現佳`);
+    const convPct = (totY.purchase > 0 && totT.cart > 0) ? null : null;
+    if (reasons.length === 0) reasons.push('各漏斗指標變化在正常範圍，屬競標機制浮動');
+    const dir = cpaPct > 0 ? `上升 ${cpaPct.toFixed(1)}%（NT$${Math.round(cpa_y)} → NT$${Math.round(cpa_t)}）` : `下降 ${Math.abs(cpaPct).toFixed(1)}%（NT$${Math.round(cpa_y)} → NT$${Math.round(cpa_t)}）`;
+    cpaAnalysis = `CPA ${dir}。${reasons.join('；')}。`;
   }
 
   // ── 今昨天整體比較 ──
   let dailyComp = '';
-  if (!hasYest || !hasToday) {
-    if (!hasToday) dailyComp = `今天數據尚未產生，以昨天表現為基準：ROAS ${roas_y.toFixed(2)}x、CPA NT$${Math.round(cpa_y)}、購買 ${purchase_y} 筆。整體表現${roas_y >= 3 ? '良好' : roas_y >= 2 ? '普通' : '偏弱'}，建議持續觀察今日數據走勢。`;
-    else dailyComp = '昨天無數據，今天為第一筆可參考數據，待明天可進行比較分析。';
+  if (!spend_t) {
+    dailyComp = `昨天總花費 NT$${Math.round(spend_y)}，購買 ${purchase_y} 筆，ROAS ${roas_y.toFixed(2)}x。今天數據待產生。`;
   } else {
     const goods = [], bads = [];
+    const roasPct = roas_y > 0 ? (roas_t - roas_y) / roas_y * 100 : 0;
     if (roasPct > 5) goods.push(`ROAS 提升至 ${roas_t.toFixed(2)}x`);
     else if (roasPct < -5) bads.push(`ROAS 下滑至 ${roas_t.toFixed(2)}x`);
-    if (ctrPct > 5) goods.push(`CTR 改善至 ${ctr_t.toFixed(2)}%`);
-    else if (ctrPct < -5) bads.push(`CTR 下滑至 ${ctr_t.toFixed(2)}%`);
-    if (purchasePct > 0) goods.push(`購買筆數增加（${purchase_y}→${purchase_t}筆）`);
-    else if (purchasePct < -10) bads.push(`購買筆數減少（${purchase_y}→${purchase_t}筆）`);
-    if (cartPct > 10) goods.push(`加購人數增加 ${cartPct.toFixed(0)}%`);
-    else if (cartPct < -10) bads.push(`加購人數減少 ${Math.abs(cartPct).toFixed(0)}%`);
-    if (goods.length > 0 && bads.length === 0) dailyComp = `今天整體優於昨天：${goods.join('、')}。數據趨勢向好，可適度放大預算。`;
-    else if (bads.length > 0 && goods.length === 0) dailyComp = `今天整體弱於昨天：${bads.join('、')}。建議檢查素材疲乏或受眾重疊問題。`;
-    else if (goods.length > 0 && bads.length > 0) dailyComp = `今天表現喜憂參半。正面：${goods.join('、')}；需注意：${bads.join('、')}。建議優先排查負面指標原因。`;
-    else dailyComp = `今天與昨天數據相近，整體穩定。ROAS ${roas_t.toFixed(2)}x，CPA NT$${Math.round(cpa_t)}，在正常波動範圍內。`;
+    if (purchase_t > purchase_y) goods.push(`購買增加（${purchase_y}→${purchase_t}筆）`);
+    else if (purchase_t < purchase_y) bads.push(`購買減少（${purchase_y}→${purchase_t}筆）`);
+    if (goods.length > 0 && bads.length === 0) dailyComp = `昨天整體優於前天：${goods.join('、')}。趨勢向好。`;
+    else if (bads.length > 0 && goods.length === 0) dailyComp = `昨天整體弱於前天：${bads.join('、')}。建議檢查素材或受眾問題。`;
+    else if (goods.length > 0 && bads.length > 0) dailyComp = `昨天表現喜憂參半。正面：${goods.join('、')}；需注意：${bads.join('、')}。`;
+    else dailyComp = `昨天與前天表現相近，ROAS ${roas_t.toFixed(2)}x，屬正常波動範圍。`;
   }
 
-  // ── 廣告策略建議 ──
-  // 以昨天（或今天）為主要判斷基準
-  const refRoas = hasYest ? roas_y : roas_t;
-  const refCpa = hasYest ? cpa_y : cpa_t;
-  const refCart = hasYest ? cart_y : cart_t;
-  const refPurchase = hasYest ? purchase_y : purchase_t;
-  const refSpend = hasYest ? spend_y : spend_t;
-
-  // ASC 建議（看 ROAS 和整體成效）
-  let ascAction, ascReason, ascCls;
-  if (refRoas >= 4) {
-    ascAction = '加預算 +20%'; ascCls = 'up';
-    ascReason = `ROAS ${refRoas.toFixed(2)}x 表現優異，ASC 演算法已找到高品質受眾，趁勢放大預算可提升整體轉換量。`;
-  } else if (refRoas >= 2.5) {
-    ascAction = '持續進行'; ascCls = 'up';
-    ascReason = `ROAS ${refRoas.toFixed(2)}x 達標，ASC 正在學習最佳受眾組合，維持預算穩定讓演算法持續優化即可。`;
-  } else if (refRoas >= 1.5) {
-    ascAction = '觀察 3 天再決定'; ascCls = 'neu';
-    ascReason = `ROAS ${refRoas.toFixed(2)}x 偏低，ASC 可能仍在學習期（建議至少跑 7 天）。先維持預算，3 天後若無改善再調整素材。`;
-  } else if (refSpend < 500) {
-    ascAction = '資料不足，繼續觀察'; ascCls = 'neu';
-    ascReason = `花費 NT$${Math.round(refSpend)} 過低，數據樣本不足以判斷。建議每日至少 NT$1,000 以上讓演算法收集足夠數據。`;
-  } else {
-    ascAction = '暫停並換素材'; ascCls = 'down';
-    ascReason = `ROAS ${refRoas.toFixed(2)}x 低於盈虧平衡點，ASC 無法找到有效受眾。建議暫停、更換素材後重新啟動學習期。`;
+  // ── 廣告策略建議（依類型分別給建議）──
+  function typeRec(tp) {
+    const dt = typeDataT[tp], dy = typeDataY[tp];
+    if (!dt || dt.spend === 0) return null;
+    const roas = dt.roas, spend = dt.spend, purchase = dt.purchase;
+    let action, cls, reason;
+    if (spend < 300) {
+      action='觀察中'; cls='neu'; reason=`花費 NT$${Math.round(spend)} 資料不足`;
+    } else if (roas >= 4) {
+      action='加大預算'; cls='up'; reason=`ROAS ${roas.toFixed(2)}x 優異，建議增加 20-30% 預算`;
+    } else if (roas >= 2.5) {
+      action='持續進行'; cls='up'; reason=`ROAS ${roas.toFixed(2)}x 達標，維持預算`;
+    } else if (roas >= 1.5) {
+      action='持續觀察'; cls='neu'; reason=`ROAS ${roas.toFixed(2)}x 偏低，再觀察 2-3 天`;
+    } else if (roas > 0) {
+      action='檢討素材'; cls='down'; reason=`ROAS ${roas.toFixed(2)}x 低於盈虧點，建議換素材`;
+    } else {
+      action='暫停評估'; cls='down'; reason=`花費 NT$${Math.round(spend)} 但零購買，需立即檢查`;
+    }
+    return {action, cls, reason, spend, roas, purchase};
   }
 
-  // 興趣受眾建議（看 CTR 和加購率）
-  let intAction, intReason, intCls;
-  const cartRate = refSpend > 0 ? (refCart / (outbound_y||outbound_t||1) * 100) : 0;
-  if (refRoas >= 3 && ctr_y >= 2) {
-    intAction = '持續進行'; intCls = 'up';
-    intReason = `CTR ${ctr_y.toFixed(2)}% 且 ROAS ${refRoas.toFixed(2)}x，興趣受眾精準度高。可嘗試擴大相似受眾或疊加新興趣標籤。`;
-  } else if (ctr_y < 1 && ctr_y > 0) {
-    intAction = '更換素材或受眾'; intCls = 'down';
-    intReason = `CTR 僅 ${ctr_y.toFixed(2)}%，廣告對目標受眾吸引力不足。建議測試新素材（影片 vs 圖片）或重新定義興趣標籤。`;
-  } else if (refCart > 0 && refPurchase === 0) {
-    intAction = '調整落地頁'; intCls = 'neu';
-    intReason = `有 ${refCart} 次加購但零購買，問題在落地頁或結帳流程，非受眾問題。先修正轉換障礙再評估廣告組。`;
-  } else {
-    intAction = '維持並 A/B 測試'; intCls = 'neu';
-    intReason = `數據尚在積累中，建議同時跑 2-3 組不同素材，找出表現最佳的組合後集中預算。`;
-  }
-
-  // RT 再行銷建議（看結帳和購買漏斗）
-  let rtAction, rtReason, rtCls;
-  if (refPurchase > 0 && refRoas >= 5) {
-    rtAction = '加預算'; rtCls = 'up';
-    rtReason = `RT ROAS ${refRoas.toFixed(2)}x，再行銷受眾購買意圖強。這是最高效的廣告類型，建議優先確保此組有足夠預算。`;
-  } else if (checkout_y > 0 && purchase_y === 0) {
-    rtAction = '加強結帳挽回'; rtCls = 'neu';
-    rtReason = `有 ${checkout_y} 次結帳但未完成購買，建議針對「放棄結帳」受眾投放限時優惠廣告，轉換率應可顯著提升。`;
-  } else if (refCart > 5 && refPurchase < 2) {
-    rtAction = '擴大加購挽回受眾'; rtCls = 'up';
-    rtReason = `加購 ${refCart} 次但僅 ${refPurchase} 筆購買，購買意圖明確但流失嚴重。建議針對加購未購的受眾加強 RT 觸及頻次。`;
-  } else if (refPurchase > 5 && refRoas >= 3) {
-    rtAction = '持續進行'; rtCls = 'up';
-    rtReason = `RT 轉換穩定（${refPurchase} 筆購買），維持現有預算即可。注意受眾規模，若頻次超過 5 需擴充 RT 名單來源。`;
-  } else {
-    rtAction = '維持並監控頻次'; rtCls = 'neu';
-    rtReason = `目前 RT 效益尚可，持續投放。注意廣告頻次不超過 3，避免受眾疲乏；若頻次過高建議輪替素材。`;
+  // Build strategy rows for types with spend
+  let strategyRows = '';
+  const tagColors = {
+    'ASC':'tag-asc','KOL':'#6a1b9a','興趣':'tag-int','台灣興趣':'tag-int',
+    '海外興趣':'tag-int','類似':'#2e7d32','RT':'tag-rt','台灣RT':'tag-rt','海外RT':'tag-rt'
+  };
+  for (const tp of types) {
+    const rec = typeRec(tp);
+    if (!rec) continue;
+    const tagCls = tagColors[tp] && tagColors[tp].startsWith('tag-') ? tagColors[tp] : 'tag-int';
+    const badgeCls = rec.cls === 'up' ? 'up' : rec.cls === 'down' ? 'down' : 'neu';
+    strategyRows += `<div class="action-item" style="margin-bottom:8px">
+      <span class="change-badge ${badgeCls}">${rec.action}</span>&nbsp;
+      <span class="tag ${tagCls}" style="background:${tagColors[tp]&&!tagColors[tp].startsWith('tag-')?tagColors[tp]+'22':''}; color:${tagColors[tp]&&!tagColors[tp].startsWith('tag-')?tagColors[tp]:''}">${tp}</span>
+      ${rec.reason}（花費 NT$${Math.round(rec.spend).toLocaleString()}，ROAS ${rec.roas.toFixed(2)}x，購買 ${rec.purchase}）
+    </div>`;
   }
 
   // ── 整體評分 ──
   let score = 50;
-  if (refRoas >= 4) score += 25; else if (refRoas >= 3) score += 15; else if (refRoas >= 2) score += 5; else score -= 10;
-  if (ctr_y >= 2) score += 10; else if (ctr_y >= 1) score += 5; else if (ctr_y > 0) score -= 5;
-  if (refPurchase >= 10) score += 10; else if (refPurchase >= 3) score += 5;
-  if (cpaPct !== null && cpaPct < -10) score += 5; else if (cpaPct !== null && cpaPct > 20) score -= 5;
+  if (roas_t >= 4) score += 25; else if (roas_t >= 3) score += 15; else if (roas_t >= 2) score += 5; else if (roas_t > 0) score -= 10;
+  if (ctr_t >= 2) score += 10; else if (ctr_t >= 1) score += 5;
+  if (purchase_t >= 10) score += 10; else if (purchase_t >= 3) score += 5;
   score = Math.min(100, Math.max(0, score));
   const scoreColor = score >= 70 ? 'var(--green)' : score >= 50 ? 'var(--amber)' : 'var(--red)';
-  const scoreTxt = score >= 75 ? '整體表現良好，建議維持策略並適度放大預算。' : score >= 55 ? '表現中等，有優化空間，建議針對弱項指標逐一改善。' : '表現偏弱，需優先找出轉換瓶頸，建議從素材和落地頁著手改善。';
-
-  const actionColor = (cls) => cls;
+  const scoreTxt = score >= 75 ? '整體表現良好，建議維持策略並適度放大預算。' : score >= 55 ? '表現中等，有優化空間，建議針對弱項指標改善。' : '表現偏弱，需優先找出轉換瓶頸，從素材和落地頁著手。';
 
   el.innerHTML = `
     <div class="insight-item">
@@ -1125,94 +1124,11 @@ function buildAIAnalysis(clientName, t, y, containerId) {
       <div class="insight-body">${cpaAnalysis}</div>
     </div>
     <div class="insight-item">
-      <div class="insight-title">📈 今昨天差異</div>
+      <div class="insight-title">📈 昨天 vs 前天差異</div>
       <div class="insight-body">${dailyComp}</div>
     </div>
     <div class="insight-item">
-      <div class="insight-title">🎯 廣告策略建議</div>
-      <div class="action-list">
-        <div class="action-item"><span class="change-badge ${ascCls}">${ascAction}</span>&nbsp;<span class="tag tag-asc">ASC</span>${ascReason}</div>
-        <div class="action-item" style="margin-top:8px"><span class="change-badge ${intCls}">${intAction}</span>&nbsp;<span class="tag tag-int">興趣受眾</span>${intReason}</div>
-        <div class="action-item" style="margin-top:8px"><span class="change-badge ${rtCls}">${rtAction}</span>&nbsp;<span class="tag tag-rt">再行銷 RT</span>${rtReason}</div>
-      </div>
+      <div class="insight-title">🎯 各類型廣告策略建議</div>
+      <div class="action-list">${strategyRows || '<div style="color:var(--text3);font-size:13px">廣告數據載入中...</div>'}</div>
     </div>`;
 }
-
-function renderClient(idx, todayData, yesterdayData, adsToday, adsYesterday) {
-  const content = document.getElementById(`content-${idx}`);
-  const { today, yesterday } = getDateRange();
-
-  const kpiHtml = buildTopKPIs(todayData, yesterdayData);
-  const tableHtml = buildMetricsTable(todayData, yesterdayData);
-
-  content.innerHTML = `
-    <div style="font-size:12px;color:var(--text3);margin-bottom:12px">
-      昨天 ${today}（主）｜前天 ${yesterday}
-    </div>
-    <div class="section-title">廣告類型分組總覽</div>
-    <div id="creative-summary-${idx}"><div class="creative-loading">載入中...</div></div>
-    ${kpiHtml}
-    <div class="section-title">詳細指標對比</div>
-    ${tableHtml}
-    <div class="section-title">AI 智能分析與建議</div>
-    <div class="ai-box">
-      <div class="ai-box-header">
-        <div class="ai-icon">🤖</div>
-        <h3>Claude AI 廣告優化分析</h3>
-      </div>
-      <div class="ai-content" id="ai-content-${idx}">
-        <div class="ai-loading">準備分析...</div>
-      </div>
-    </div>
-    <div class="section-title" style="margin-top:24px">素材明細</div>
-    <div class="period-toggle">
-      <button class="period-btn active" data-client="${idx}" data-period="1d" onclick="loadDetailPeriod(${idx},'1d')">昨天</button>
-      <button class="period-btn" data-client="${idx}" data-period="7d" onclick="loadDetailPeriod(${idx},'7d')">近 7 天</button>
-      <button class="period-btn" data-client="${idx}" data-period="14d" onclick="loadDetailPeriod(${idx},'14d')">近 14 天</button>
-    </div>
-    <div id="creative-${idx}"><div class="period-loading">載入中...</div></div>`;
-
-  buildAIAnalysis(CLIENTS[idx].name, todayData, yesterdayData, `ai-content-${idx}`);
-  buildCreativeAnalysis(idx, `creative-${idx}`, adsToday, adsYesterday);
-  // Init flat detail table with yesterday data (adsToday = yesterday in our date logic)
-  _periodCache[idx + '_1d'] = adsToday;
-  renderFlatTable(idx, adsToday, '1d');
-}
-
-async function loadClient(idx) {
-  const dot = document.getElementById(`status-dot-${idx}`);
-  const txt = document.getElementById(`status-text-${idx}`);
-  const errEl = document.getElementById(`error-${idx}`);
-  dot.className = 'status-dot loading';
-  txt.textContent = '資料載入中...';
-  errEl.innerHTML = '';
-
-  try {
-    const data = await fetchClientData(idx);
-    const { today, yesterday } = data;
-    dot.className = 'status-dot ok';
-    txt.textContent = `資料已更新`;
-    renderClient(idx, today, yesterday, data.adsToday||[], data.adsYesterday||[]);
-  } catch(e) {
-    dot.className = 'status-dot error';
-    txt.textContent = '資料載入失敗';
-    errEl.innerHTML = `<div class="error-msg">⚠️ 無法取得資料：${e.message}</div>`;
-  }
-}
-
-function loadAllData() {
-  const { today } = getDateRange();
-  const {today:d1,yesterday:d2}=getDateRange(); document.getElementById('todayBadge').textContent = '昨 '+d1+' / 前 '+d2;
-  loadClient(0);
-  loadClient(1);
-}
-
-function switchClient(idx) {
-  document.querySelectorAll('.client-tab').forEach((t,i) => t.classList.toggle('active', i===idx));
-  document.querySelectorAll('.client-panel').forEach((p,i) => p.classList.toggle('active', i===idx));
-}
-
-loadAllData();
-</script>
-</body>
-</html>
