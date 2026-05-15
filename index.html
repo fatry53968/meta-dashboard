@@ -477,6 +477,8 @@ async function loadDetailPeriod(clientIdx, period) {
       const r = getExtendedDateRange(7); since = r.since; until = r.until;
     } else if (period === '14d') {
       const r = getExtendedDateRange(14); since = r.since; until = r.until;
+    } else if (period === '30d') {
+      const r = getExtendedDateRange(30); since = r.since; until = r.until;
     } else {
       const { today } = getDateRange(); since = today; until = today;
     }
@@ -560,6 +562,7 @@ function renderFlatTable(clientIdx, rawAds, period) {
 
   let periodLabel = period==='7d'?`近7天（${getExtendedDateRange(7).since} ～ ${getExtendedDateRange(7).until}）`:
                     period==='14d'?`近14天（${getExtendedDateRange(14).since} ～ ${getExtendedDateRange(14).until}）`:
+                    period==='30d'?`近30天（${getExtendedDateRange(30).since} ～ ${getExtendedDateRange(30).until}）`:
                     `昨天（${d1}）`;
 
   let rows = '';
@@ -576,9 +579,7 @@ function renderFlatTable(clientIdx, rawAds, period) {
     const dispName = (ad.ad_name||'').length>38?(ad.ad_name||'').slice(0,38)+'…':(ad.ad_name||'未命名');
     rows += `<tr>
       <td style="padding:8px 12px">
-        <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};margin-right:5px;vertical-align:middle"></span>
-        <span style="font-size:10px;color:${color};font-weight:500">${ad._type}</span>
-        <div class="ad-name" style="margin-top:2px" title="${(ad.ad_name||'').replace(/</g,'&lt;')}">${dispName}</div>
+        <div class="ad-name" title="${(ad.ad_name||'').replace(/</g,'&lt;')}">${dispName}</div>
       </td>
       <td style="padding:8px 12px;text-align:right">
         NT$${Math.round(spend).toLocaleString()}
@@ -734,6 +735,8 @@ async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYester
       <td style="padding:9px 14px;text-align:right">${row2(fN(st.purchase),fN(sy.purchase))}</td>
       <td style="padding:9px 14px;text-align:right">${row2(fM(st.cpa),fM(sy.cpa))}</td>
       <td style="padding:9px 14px;text-align:right;font-weight:600">${row2('<span style="color:'+rc(st.roas)+'">'+fX(st.roas)+'</span>','<span style="color:'+rc(sy.roas)+'">'+fX(sy.roas)+'</span>')}</td>
+      <td style="padding:9px 14px;text-align:center">${chg(st.spend,sy.spend,false)}</td>
+      <td style="padding:9px 14px;text-align:center">${chg(st.cpa,sy.cpa,true)}</td>
       <td style="padding:9px 14px;text-align:center">${chg(st.roas,sy.roas,false)}</td>
     </tr>`;
   }
@@ -796,6 +799,8 @@ async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYester
           <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">購買</th>
           <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">CPA</th>
           <th style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">ROAS</th>
+          <th style="padding:10px 14px;text-align:center;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">花費變化</th>
+          <th style="padding:10px 14px;text-align:center;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">CPA變化</th>
           <th style="padding:10px 14px;text-align:center;font-size:12px;color:var(--text2);border-bottom:0.5px solid var(--border)">ROAS變化</th>
         </tr></thead>
         <tbody style="background:var(--surface)">
@@ -807,6 +812,8 @@ async function buildCreativeAnalysis(clientIdx, containerId, adsToday, adsYester
             <td style="padding:10px 14px;text-align:right">${row2(fN(grandT.purchase),fN(grandY.purchase))}</td>
             <td style="padding:10px 14px;text-align:right">${row2(fM(grandTCpa),fM(grandYCpa))}</td>
             <td style="padding:10px 14px;text-align:right">${row2('<span style="color:'+rc(grandTRoas)+'">'+fX(grandTRoas)+'</span>','<span style="color:'+rc(grandYRoas)+'">'+fX(grandYRoas)+'</span>')}</td>
+            <td style="padding:10px 14px;text-align:center">${chg(grandT.spend,grandY.spend,false)}</td>
+            <td style="padding:10px 14px;text-align:center">${chg(grandTCpa,grandYCpa,true)}</td>
             <td style="padding:10px 14px;text-align:center">${chg(grandTRoas,grandYRoas,false)}</td>
           </tr>
         </tbody>
@@ -1030,43 +1037,77 @@ function buildAIAnalysis(clientName, t, y, containerId, clientIdx, adsToday, ads
     typeDataY[tp] = sumType(adsYesterday, tp);
   }
 
-  // ── CPA 分析（各類型個別比較）──
+  // ── CPA 分析（各類型個別比較＋原因推斷）──
   const noPurchaseTypes = new Set(['流量/互動/觀看','類似','海外RT','海外興趣']);
   let cpaAnalysis = '';
   const cpaLines = [];
+
+  // Funnel metrics from totals
+  const cartTotal_t = totT.cart, cartTotal_y = totY.cart;
+  const checkoutTotal_t = getVal ? 0 : 0; // we use cart as proxy
+  const cartPct = cartTotal_y > 0 ? (cartTotal_t - cartTotal_y) / cartTotal_y * 100 : null;
+  const ctrPct2 = ctr_y > 0 ? (ctr_t - ctr_y) / ctr_y * 100 : null;
+
   for (const tp of types) {
     const dt = typeDataT[tp], dy = typeDataY[tp];
     if (!dt || dt.spend === 0) continue;
-    if (noPurchaseTypes.has(tp)) {
-      const spPct = dy.spend > 0 ? (dt.spend - dy.spend) / dy.spend * 100 : null;
-      cpaLines.push(`${tp} 花費 NT$${Math.round(dt.spend).toLocaleString()}${spPct!==null?'（'+(spPct>0?'+':'')+spPct.toFixed(1)+'%）':''}`);
-    } else if (dt.cpa === 0 && dt.purchase === 0) {
-      cpaLines.push(`${tp} 昨天零購買（花費 NT$${Math.round(dt.spend).toLocaleString()}）`);
+    if (noPurchaseTypes.has(tp)) continue;
+    if (dt.cpa === 0 && dt.purchase === 0) {
+      // Diagnose: is it CTR issue or conversion issue?
+      let diag = `花費 NT$${Math.round(dt.spend).toLocaleString()} 但零購買`;
+      if (ctrPct2 !== null && ctrPct2 < -10) diag += `，CTR 下滑 ${Math.abs(ctrPct2).toFixed(1)}% 素材可能疲乏`;
+      else if (dt.cart > 0) diag += `，有 ${dt.cart} 次加購但未成交，建議加強 RT 再行銷追蹤`;
+      else diag += `，建議檢查素材吸引力或落地頁`;
+      cpaLines.push(`${tp}：${diag}`);
     } else if (dy.cpa === 0) {
-      cpaLines.push(`${tp} CPA NT$${Math.round(dt.cpa).toLocaleString()}，購買 ${dt.purchase} 筆（前天無購買可比）`);
+      cpaLines.push(`${tp}：CPA NT$${Math.round(dt.cpa).toLocaleString()}，購買 ${dt.purchase} 筆（前天無購買可比）`);
     } else {
       const pct = (dt.cpa - dy.cpa) / dy.cpa * 100;
+      let reason = '';
+      if (pct > 20) {
+        if (dt.roas < dy.roas) reason = '受眾品質下降或素材疲乏，建議輪換素材或縮小受眾';
+        else reason = '花費增加但轉換未同步提升，觀察 1-2 天再決定是否調整';
+      } else if (pct < -15) {
+        if (dt.purchase > dy.purchase) reason = '購買量增加且成本下降，演算法找到高效受眾，可加預算';
+        else reason = '成本下降但購買量持平，可能是低 CPA 廣告佔比提升';
+      } else {
+        reason = '正常波動範圍';
+      }
       const dir = pct > 0 ? `↑${pct.toFixed(1)}%` : `↓${Math.abs(pct).toFixed(1)}%`;
-      cpaLines.push(`${tp} CPA ${dir}（NT$${Math.round(dy.cpa)}→NT$${Math.round(dt.cpa)}，購買 ${dt.purchase} 筆）`);
+      cpaLines.push(`${tp}：CPA ${dir}（NT$${Math.round(dy.cpa)}→NT$${Math.round(dt.cpa)}，購買 ${dt.purchase} 筆）— ${reason}`);
     }
   }
-  cpaAnalysis = cpaLines.length > 0 ? cpaLines.join('；') + '。' : '無足夠數據進行 CPA 分析。';
+  cpaAnalysis = cpaLines.length > 0 ? cpaLines.join('<br>') : '無足夠數據進行 CPA 分析。';
 
-  // ── 今昨天整體比較 ──
+  // ── 今昨天整體比較 + 再行銷建議 ──
   let dailyComp = '';
   if (!spend_t) {
     dailyComp = `昨天總花費 NT$${Math.round(spend_y)}，購買 ${purchase_y} 筆，ROAS ${roas_y.toFixed(2)}x。今天數據待產生。`;
   } else {
-    const goods = [], bads = [];
+    const goods = [], bads = [], suggestions = [];
     const roasPct = roas_y > 0 ? (roas_t - roas_y) / roas_y * 100 : 0;
+    const cartPctD = cart_y > 0 ? (cart_t - cart_y) / cart_y * 100 : null;
     if (roasPct > 5) goods.push(`ROAS 提升至 ${roas_t.toFixed(2)}x`);
     else if (roasPct < -5) bads.push(`ROAS 下滑至 ${roas_t.toFixed(2)}x`);
     if (purchase_t > purchase_y) goods.push(`購買增加（${purchase_y}→${purchase_t}筆）`);
     else if (purchase_t < purchase_y) bads.push(`購買減少（${purchase_y}→${purchase_t}筆）`);
-    if (goods.length > 0 && bads.length === 0) dailyComp = `昨天整體優於前天：${goods.join('、')}。趨勢向好。`;
-    else if (bads.length > 0 && goods.length === 0) dailyComp = `昨天整體弱於前天：${bads.join('、')}。建議檢查素材或受眾問題。`;
-    else if (goods.length > 0 && bads.length > 0) dailyComp = `昨天表現喜憂參半。正面：${goods.join('、')}；需注意：${bads.join('、')}。`;
-    else dailyComp = `昨天與前天表現相近，ROAS ${roas_t.toFixed(2)}x，屬正常波動範圍。`;
+    if (cartPctD !== null && cartPctD > 10) goods.push(`加購增加 ${cartPctD.toFixed(1)}%（${cart_y}→${cart_t}次）`);
+
+    // RT suggestion: if cart is high relative to purchase, suggest retargeting
+    const cartToPurchaseRatio = purchase_t > 0 ? cart_t / purchase_t : 0;
+    if (cart_t > 0 && cartToPurchaseRatio > 8) {
+      suggestions.push(`⚡ 加購人數（${cart_t}次）遠高於購買（${purchase_t}筆），轉換漏斗流失嚴重，建議加強 RT 再行銷追蹤加購未購族群`);
+    } else if (cart_t > purchase_t * 5 && cart_t > 50) {
+      suggestions.push(`💡 加購次數（${cart_t}）是購買（${purchase_t}）的 ${Math.round(cartToPurchaseRatio)} 倍，可針對「加購未購」設定再行銷廣告提高成交`);
+    }
+
+    let base = '';
+    if (goods.length > 0 && bads.length === 0) base = `昨天整體優於前天：${goods.join('、')}。`;
+    else if (bads.length > 0 && goods.length === 0) base = `昨天整體弱於前天：${bads.join('、')}。`;
+    else if (goods.length > 0 && bads.length > 0) base = `昨天喜憂參半。正面：${goods.join('、')}；需注意：${bads.join('、')}。`;
+    else base = `昨天與前天表現相近，ROAS ${roas_t.toFixed(2)}x。`;
+
+    dailyComp = base + (suggestions.length > 0 ? '<br><br>' + suggestions.join('<br>') : '');
   }
 
   // ── 廣告策略建議（依類型分別給建議）──
@@ -1176,12 +1217,12 @@ function buildAIAnalysis(clientName, t, y, containerId, clientIdx, adsToday, ads
       <div class="insight-body">${scoreTxt}</div>
     </div>
     <div class="insight-item">
-      <div class="insight-title">💰 CPA 變化分析</div>
-      <div class="insight-body">${cpaAnalysis}</div>
+      <div class="insight-title">💰 CPA 各類型分析</div>
+      <div class="insight-body" style="line-height:1.8">${cpaAnalysis}</div>
     </div>
     <div class="insight-item">
       <div class="insight-title">📈 昨天 vs 前天差異</div>
-      <div class="insight-body">${dailyComp}</div>
+      <div class="insight-body" style="line-height:1.8">${dailyComp}</div>
     </div>
     <div class="insight-item">
       <div class="insight-title">🎯 各類型廣告策略建議</div>
@@ -1221,6 +1262,7 @@ function renderClient(idx, todayData, yesterdayData, adsToday, adsYesterday) {
       <button class="period-btn active" data-client="${idx}" data-period="1d" onclick="loadDetailPeriod(${idx},'1d')">昨天</button>
       <button class="period-btn" data-client="${idx}" data-period="7d" onclick="loadDetailPeriod(${idx},'7d')">近 7 天</button>
       <button class="period-btn" data-client="${idx}" data-period="14d" onclick="loadDetailPeriod(${idx},'14d')">近 14 天</button>
+      <button class="period-btn" data-client="${idx}" data-period="30d" onclick="loadDetailPeriod(${idx},'30d')">近 30 天</button>
     </div>
     <div id="creative-${idx}"><div class="period-loading">載入中...</div></div>`;
 
