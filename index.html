@@ -1030,23 +1030,27 @@ function buildAIAnalysis(clientName, t, y, containerId, clientIdx, adsToday, ads
     typeDataY[tp] = sumType(adsYesterday, tp);
   }
 
-  // ── CPA 分析 ──
+  // ── CPA 分析（各類型個別比較）──
+  const noPurchaseTypes = new Set(['流量/互動/觀看','類似','海外RT','海外興趣']);
   let cpaAnalysis = '';
-  const cpaPct = cpa_y > 0 ? ((cpa_t - cpa_y) / cpa_y * 100) : null;
-  if (!spend_y) {
-    cpaAnalysis = '前天無花費數據，無法進行 CPA 比較分析。';
-  } else if (!spend_t) {
-    cpaAnalysis = `昨天 CPA 為 NT$${Math.round(cpa_y)}，今天數據尚未產生，建議下午重新整理查看。`;
-  } else {
-    const reasons = [];
-    const ctrPct = ctr_y > 0 ? (ctr_t - ctr_y) / ctr_y * 100 : null;
-    if (ctrPct !== null && ctrPct < -10) reasons.push(`CTR 下滑 ${Math.abs(ctrPct).toFixed(1)}%，素材吸引力降低`);
-    if (ctrPct !== null && ctrPct > 10) reasons.push(`CTR 提升 ${ctrPct.toFixed(1)}%，素材表現佳`);
-    const convPct = (totY.purchase > 0 && totT.cart > 0) ? null : null;
-    if (reasons.length === 0) reasons.push('各漏斗指標變化在正常範圍，屬競標機制浮動');
-    const dir = cpaPct > 0 ? `上升 ${cpaPct.toFixed(1)}%（NT$${Math.round(cpa_y)} → NT$${Math.round(cpa_t)}）` : `下降 ${Math.abs(cpaPct).toFixed(1)}%（NT$${Math.round(cpa_y)} → NT$${Math.round(cpa_t)}）`;
-    cpaAnalysis = `CPA ${dir}。${reasons.join('；')}。`;
+  const cpaLines = [];
+  for (const tp of types) {
+    const dt = typeDataT[tp], dy = typeDataY[tp];
+    if (!dt || dt.spend === 0) continue;
+    if (noPurchaseTypes.has(tp)) {
+      const spPct = dy.spend > 0 ? (dt.spend - dy.spend) / dy.spend * 100 : null;
+      cpaLines.push(`${tp} 花費 NT$${Math.round(dt.spend).toLocaleString()}${spPct!==null?'（'+(spPct>0?'+':'')+spPct.toFixed(1)+'%）':''}`);
+    } else if (dt.cpa === 0 && dt.purchase === 0) {
+      cpaLines.push(`${tp} 昨天零購買（花費 NT$${Math.round(dt.spend).toLocaleString()}）`);
+    } else if (dy.cpa === 0) {
+      cpaLines.push(`${tp} CPA NT$${Math.round(dt.cpa).toLocaleString()}，購買 ${dt.purchase} 筆（前天無購買可比）`);
+    } else {
+      const pct = (dt.cpa - dy.cpa) / dy.cpa * 100;
+      const dir = pct > 0 ? `↑${pct.toFixed(1)}%` : `↓${Math.abs(pct).toFixed(1)}%`;
+      cpaLines.push(`${tp} CPA ${dir}（NT$${Math.round(dy.cpa)}→NT$${Math.round(dt.cpa)}，購買 ${dt.purchase} 筆）`);
+    }
   }
+  cpaAnalysis = cpaLines.length > 0 ? cpaLines.join('；') + '。' : '無足夠數據進行 CPA 分析。';
 
   // ── 今昨天整體比較 ──
   let dailyComp = '';
@@ -1087,21 +1091,73 @@ function buildAIAnalysis(clientName, t, y, containerId, clientIdx, adsToday, ads
     return {action, cls, reason, spend, roas, purchase};
   }
 
-  // Build strategy rows for types with spend
+  // Build strategy rows for types with spend - use each type's own CPA vs yesterday
   let strategyRows = '';
-  const tagColors = {
-    'ASC':'tag-asc','KOL':'#6a1b9a','興趣':'tag-int','台灣興趣':'tag-int',
-    '海外興趣':'tag-int','類似':'#2e7d32','RT':'tag-rt','台灣RT':'tag-rt','海外RT':'tag-rt'
+  const tagColorMap = {
+    'ASC':'#1565c0','KOL':'#6a1b9a','興趣':'#e65100','台灣興趣':'#e65100',
+    '海外興趣':'#bf360c','類似':'#2e7d32','RT':'#c62828','台灣RT':'#c62828',
+    '海外RT':'#ad1457','流量/互動/觀看':'#37474f','其他':'#546e7a'
   };
+
   for (const tp of types) {
-    const rec = typeRec(tp);
-    if (!rec) continue;
-    const tagCls = tagColors[tp] && tagColors[tp].startsWith('tag-') ? tagColors[tp] : 'tag-int';
-    const badgeCls = rec.cls === 'up' ? 'up' : rec.cls === 'down' ? 'down' : 'neu';
-    strategyRows += `<div class="action-item" style="margin-bottom:8px">
-      <span class="change-badge ${badgeCls}">${rec.action}</span>&nbsp;
-      <span class="tag ${tagCls}" style="background:${tagColors[tp]&&!tagColors[tp].startsWith('tag-')?tagColors[tp]+'22':''}; color:${tagColors[tp]&&!tagColors[tp].startsWith('tag-')?tagColors[tp]:''}">${tp}</span>
-      ${rec.reason}（花費 NT$${Math.round(rec.spend).toLocaleString()}，ROAS ${rec.roas.toFixed(2)}x，購買 ${rec.purchase}）
+    const dt = typeDataT[tp], dy = typeDataY[tp];
+    if (!dt || dt.spend === 0) continue;
+    const color = tagColorMap[tp]||'#546e7a';
+    const spendT = dt.spend, spendY = dy.spend;
+    const cpaT = dt.cpa, cpaY = dy.cpa;
+    const roasT = dt.roas, roasY = dy.roas;
+    const purT = dt.purchase;
+    const cpaPct = cpaY > 0 ? ((cpaT - cpaY) / cpaY * 100) : null;
+    const roasPct = roasY > 0 ? ((roasT - roasY) / roasY * 100) : null;
+
+    let action, cls, reason;
+
+    if (noPurchaseTypes.has(tp)) {
+      // 不以購買評估 — 用花費趨勢和加購判斷
+      if (spendT > 0 && spendY > 0) {
+        const spendPct = (spendT - spendY) / spendY * 100;
+        action = '持續觀察'; cls = 'neu';
+        reason = `此類型以品牌/流量為主，花費 NT$${Math.round(spendT).toLocaleString()}（前天 NT$${Math.round(spendY).toLocaleString()}，${spendPct>0?'+':''}${spendPct.toFixed(1)}%），不以購買 ROAS 評估`;
+      } else {
+        action = '觀察中'; cls = 'neu';
+        reason = `花費 NT$${Math.round(spendT).toLocaleString()}，持續觀察流量成效`;
+      }
+    } else if (spendT < 300) {
+      action = '資料不足'; cls = 'neu';
+      reason = `花費 NT$${Math.round(spendT).toLocaleString()} 樣本不足，建議累積至 NT$500+ 再判斷`;
+    } else if (purT === 0) {
+      // 有花費但零購買
+      action = '檢查素材'; cls = 'down';
+      reason = `花費 NT$${Math.round(spendT).toLocaleString()} 但昨天零購買，需檢查素材吸引力或落地頁轉換障礙`;
+    } else if (cpaPct !== null && cpaPct > 20) {
+      // CPA 明顯變貴
+      action = '注意CPA上升'; cls = 'down';
+      reason = `CPA 上升 ${cpaPct.toFixed(1)}%（NT$${Math.round(cpaY)}→NT$${Math.round(cpaT)}），購買 ${purT} 筆，建議檢查素材疲乏或受眾重疊`;
+    } else if (cpaPct !== null && cpaPct < -15) {
+      // CPA 明顯下降
+      if (roasT >= 3) {
+        action = '加大預算'; cls = 'up';
+        reason = `CPA 下降 ${Math.abs(cpaPct).toFixed(1)}% 且 ROAS ${roasT.toFixed(2)}x，效益提升，建議增加 20-30% 預算`;
+      } else {
+        action = '持續進行'; cls = 'up';
+        reason = `CPA 下降 ${Math.abs(cpaPct).toFixed(1)}%（NT$${Math.round(cpaY)}→NT$${Math.round(cpaT)}），趨勢改善，維持現有預算`;
+      }
+    } else if (roasT >= 3) {
+      action = '持續進行'; cls = 'up';
+      reason = `ROAS ${roasT.toFixed(2)}x 達標，CPA NT$${Math.round(cpaT)}，購買 ${purT} 筆，維持現有策略`;
+    } else if (roasT >= 1.5) {
+      action = '持續觀察'; cls = 'neu';
+      reason = `ROAS ${roasT.toFixed(2)}x 未達標，CPA NT$${Math.round(cpaT)}，購買 ${purT} 筆，持續觀察 2-3 天`;
+    } else {
+      action = '優化素材'; cls = 'down';
+      reason = `ROAS ${roasT.toFixed(2)}x 偏低，CPA NT$${Math.round(cpaT)}，建議更換素材或縮減預算`;
+    }
+
+    const badgeCls = cls;
+    strategyRows += `<div class="action-item" style="margin-bottom:10px;display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap">
+      <span class="change-badge ${badgeCls}" style="flex-shrink:0">${action}</span>
+      <span style="display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:500;background:${color}22;color:${color};flex-shrink:0">${tp}</span>
+      <span style="font-size:13px;color:var(--text2);line-height:1.5">${reason}</span>
     </div>`;
   }
 
