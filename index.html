@@ -290,37 +290,45 @@ async function fetchAdInsights(accountId, s, e) {
 async function fetchClientData(ci) {
   const client=CLIENTS[ci]; const{today,yesterday}=getDateRange();
   const now=new Date(); const m1=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
-  const res={today:[],yesterday:[],adsToday:[],adsYesterday:[],monthTotal:[],adsPrev:[]};
+  const res={today:[],yesterday:[],adsToday:[],adsYesterday:[],monthTotal:[],adsPrev:[],ads14d:[]};
+  const r14=getExtendedDateRange(14);
   for(const acc of client.accounts){
-    const[t,y,at,ay,mo,ap]=await Promise.all([
+    const[t,y,at,ay,mo,ap,a14]=await Promise.all([
       fetchInsights(acc,today,today).catch(()=>null),
       fetchInsights(acc,yesterday,yesterday).catch(()=>null),
       fetchAdInsights(acc,today).catch(()=>[]),
       fetchAdInsights(acc,yesterday).catch(()=>[]),
       fetchInsights(acc,m1,today).catch(()=>null),
-      fetchAdInsights(acc,yesterday).catch(()=>[])
+      fetchAdInsights(acc,yesterday).catch(()=>[]),
+      fetchAdInsights(acc,r14.since,r14.until).catch(()=>[])
     ]);
     if(t)res.today.push(t); if(y)res.yesterday.push(y); if(mo)res.monthTotal.push(mo);
     res.adsToday=res.adsToday.concat(at||[]);
     res.adsYesterday=res.adsYesterday.concat(ay||[]);
     res.adsPrev=res.adsPrev.concat(ap||[]);
+    res.ads14d=(res.ads14d||[]).concat(a14||[]);
   }
-  // 廣告組數：排除 ASC / RT，只算昨天有花費的進行中廣告組
+  // 廣告組數：排除 ASC、RT、流量/互動/觀看，只計算進行中（有花費）的興趣/KOL/類似受眾廣告組
   const uniqAdsets=(ads)=>new Set(
     ads.filter(a=>{
       if(parseFloat(a.spend||0)<=0) return false;
-      const t=(a.campaign_name||'').toUpperCase();
-      if(t.includes('ASC')) return false;
-      if(t.includes('RT')&&!t.includes('INTEREST')&&!t.includes('興趣')) return false;
+      const camp=(a.campaign_name||'').toUpperCase();
+      if(camp.includes('ASC')) return false;
+      if(camp.includes('RT')) return false;
+      if(camp.includes('互動')||camp.includes('流量')||camp.includes('觀看')) return false;
+      const aset=(a.adset_name||'').toUpperCase();
+      if(aset.includes('RT')) return false;
       return true;
-    }).map(a=>a.adset_name||a.ad_name||'')
+    }).map(a=>(a.adset_name||a.ad_name||'').trim())
+    .filter(n=>n.length>0)
   ).size;
   return{
     today:mergeInsights(res.today), yesterday:mergeInsights(res.yesterday),
     adsToday:res.adsToday, adsYesterday:res.adsYesterday,
     monthTotal:mergeInsights(res.monthTotal),
     adsetCountToday:uniqAdsets(res.adsToday),
-    adsetCountYesterday:uniqAdsets(res.adsPrev)
+    adsetCountYesterday:uniqAdsets(res.adsPrev),
+    ads14d:res.ads14d
   };
 }
 
@@ -527,7 +535,7 @@ function buildDailyReport(ci, todayData, adsToday, extra={}) {
     .slice(0,2);
   if(bestAdsets.length>0){
     const bStr=bestAdsets.map(a=>{
-      const n=a.name.length>20?a.name.slice(0,20)+'…':a.name;
+      const n=a.name;
       return `【${n}】CPA NT$${Math.round(a.cpa)}、ROAS ${a.roas.toFixed(2)}x`;
     }).join('，以及 ');
     p3+=`<br><br>昨天表現最好的廣告組合是 ${bStr}，這${bestAdsets.length>1?'兩':''}組今天建議維持甚至加碼。`;
@@ -596,6 +604,56 @@ function buildDailyReport(ci, todayData, adsToday, extra={}) {
     p5+=`<br><br>整體方向就是${actions.join('，')}，${dailyTarget>0?`目標月底前把日均單數維持在 <strong>${dailyTarget}</strong> 單以上就能達標。`:'持續優化效率。'}`;
   }
 
+  // P6 近14天素材亮點
+  let p6='';
+  const ads14d=extra.ads14d||[];
+  if(ads14d.length>0){
+    // 合併14天素材
+    const map14={};
+    for(const ad of ads14d){
+      if(parseFloat(ad.spend||0)<=0)continue;
+      const type=classType(ad.campaign_name,ci);
+      if(type==='__SKIP__')continue;
+      const key=normName(ad.ad_name);
+      if(!map14[key]){
+        map14[key]=JSON.parse(JSON.stringify(ad));
+        map14[key].ad_name=key; map14[key]._type=type;
+      } else {
+        const base=map14[key];
+        base.spend=String(parseFloat(base.spend||0)+parseFloat(ad.spend||0));
+        const mArr=(f)=>{
+          if(!ad[f])return; if(!base[f]){base[f]=JSON.parse(JSON.stringify(ad[f]));return;}
+          for(const item of ad[f]){const ex=base[f].find(x=>x.action_type===item.action_type);if(ex)ex.value=String(parseFloat(ex.value||0)+parseFloat(item.value||0));else base[f].push(JSON.parse(JSON.stringify(item)));}
+        };
+        mArr('actions');mArr('action_values');
+        const sp=parseFloat(base.spend||0); base.cost_per_action_type=[];
+        if(base.actions)for(const a of base.actions){const v=parseFloat(a.value||0);if(v>0&&sp>0)base.cost_per_action_type.push({action_type:a.action_type,value:String((sp/v).toFixed(2))});}
+      }
+    }
+    const adList14=Object.values(map14)
+      .filter(ad=>adv(ad,'purchase')>0)
+      .map(ad=>({
+        ...ad,
+        _cpa:adcpa(ad,'purchase'),
+        _roas:parseFloat(ad.spend||0)>0?adacv(ad,'purchase')/parseFloat(ad.spend||0):0,
+        _purchase:adv(ad,'purchase')
+      }))
+      .sort((a,b)=>parseFloat(b.spend||0)-parseFloat(a.spend||0));
+
+    // 分類：好素材 & 差素材
+    const good14=adList14.filter(a=>a._cpa>0&&a._cpa<thr.good).sort((a,b)=>a._cpa-b._cpa).slice(0,3);
+    const bad14=adList14.filter(a=>a._roas>0&&a._roas<1.5&&parseFloat(a.spend||0)>500).sort((a,b)=>a._roas-b._roas).slice(0,2);
+
+    if(good14.length>0){
+      const gStr=good14.map(a=>`【${a.ad_name}】CPA NT$${Math.round(a._cpa)}、ROAS ${a._roas.toFixed(2)}x`).join('，');
+      p6+=`近14天表現最好的素材：${gStr}，這${good14.length>1?good14.length+'支':'支'}建議各加預算 20-30% 放量。`;
+    }
+    if(bad14.length>0){
+      const bStr=bad14.map(a=>`【${a.ad_name}】ROAS ${a._roas.toFixed(2)}x`).join('、');
+      p6+=`<br><br>反過來，${bStr} 已經在虧錢，建議這週直接暫停，預算挪給表現好的素材。`;
+    }
+  }
+
   // ── 純文字版 ──
   const plainLines=[
     `【${client.name} 廣告日報 ${today}】`,
@@ -605,6 +663,7 @@ function buildDailyReport(ci, todayData, adsToday, extra={}) {
   if(p2) plainLines.push('',p2.replace(/<[^>]+>/g,''));
   if(p3) plainLines.push('',p3.replace(/<[^>]+>/g,'').replace(/\n/g,' '));
   if(p4) plainLines.push('',p4.replace(/<[^>]+>/g,'').replace(/\n/g,' '));
+  if(p6) plainLines.push('',p6.replace(/<[^>]+>/g,'').replace(/\n/g,' '));
   if(p5) plainLines.push('',p5.replace(/<[^>]+>/g,'').replace(/\n/g,' '));
   const plain=plainLines.join('\n').trim();
 
@@ -650,7 +709,7 @@ function buildDailyReport(ci, todayData, adsToday, extra={}) {
     </div>
     <div class="report-section">
       <div class="report-section-title">🗣️ 口述報告（可直接說給老闆聽）</div>
-      <div class="report-text" id="report-html-${ci}">${[p1, p2?'<br><br>'+p2:'', p3?'<br><br>'+p3:'', p4?'<br><br>'+p4:'', p5?'<br><br>'+p5:''].join('')}</div>
+      <div class="report-text" id="report-html-${ci}">${[p1, p2?'<br><br>'+p2:'', p3?'<br><br>'+p3:'', p4?'<br><br>'+p4:'', p6?'<br><br>'+p6:'', p5?'<br><br>'+p5:''].join('')}</div>
     </div>
     <textarea id="report-plain-${ci}" style="position:absolute;left:-9999px;top:-9999px">${plain}</textarea>`;
 }
@@ -905,7 +964,7 @@ function renderClient(ci, todayData, yesterdayData, adsToday, adsYesterday, extr
     </div>
     <div id="creative-${ci}"><div class="period-loading">載入中...</div></div>`;
 
-  _reportCache[ci]={todayData,adsToday,extra};
+  _reportCache[ci]={todayData,adsToday,extra}; // cache includes ads14d in extra
   if(todayData) document.getElementById('daily-report-'+ci).innerHTML=buildDailyReport(ci,todayData,adsToday,extra);
   document.getElementById('creative-summary-'+ci).innerHTML=buildCreativeSummary(ci,adsToday,adsYesterday);
   _periodCache[ci+'_1d']=adsToday;
@@ -920,7 +979,7 @@ async function loadClient(ci){
   try{
     const data=await fetchClientData(ci);
     dot.className='status-dot ok'; txt.textContent='資料已更新';
-    renderClient(ci,data.today,data.yesterday,data.adsToday||[],data.adsYesterday||[],{monthTotal:data.monthTotal,adsetCountToday:data.adsetCountToday,adsetCountYesterday:data.adsetCountYesterday});
+    renderClient(ci,data.today,data.yesterday,data.adsToday||[],data.adsYesterday||[],{monthTotal:data.monthTotal,adsetCountToday:data.adsetCountToday,adsetCountYesterday:data.adsetCountYesterday,ads14d:data.ads14d||[]});
   }catch(e){
     dot.className='status-dot error'; txt.textContent='資料載入失敗';
     errEl.innerHTML=`<div class="error-msg">⚠️ 無法取得資料：${e.message}</div>`;
