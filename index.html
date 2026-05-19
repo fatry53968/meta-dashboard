@@ -308,18 +308,15 @@ async function fetchClientData(ci) {
     res.adsPrev=res.adsPrev.concat(ap||[]);
     res.ads14d=(res.ads14d||[]).concat(a14||[]);
   }
-  // 廣告組數：排除 ASC、RT、流量/互動/觀看，只計算進行中（有花費）的興趣/KOL/類似受眾廣告組
+  // 廣告組數：以 adset_name 去重，排除 campaign 含 ASC 或 RT 的廣告組
   const uniqAdsets=(ads)=>new Set(
     ads.filter(a=>{
       if(parseFloat(a.spend||0)<=0) return false;
       const camp=(a.campaign_name||'').toUpperCase();
       if(camp.includes('ASC')) return false;
       if(camp.includes('RT')) return false;
-      if(camp.includes('互動')||camp.includes('流量')||camp.includes('觀看')) return false;
-      const aset=(a.adset_name||'').toUpperCase();
-      if(aset.includes('RT')) return false;
       return true;
-    }).map(a=>(a.adset_name||a.ad_name||'').trim())
+    }).map(a=>(a.adset_name||'').trim())
     .filter(n=>n.length>0)
   ).size;
   return{
@@ -401,270 +398,247 @@ function buildDailyReport(ci, todayData, adsToday, extra={}) {
   const spend=parseFloat(todayData?.spend||0);
   if(!spend) return '<div class="report-loading">⏳ 昨天尚無花費數據</div>';
 
-  const purchase=gv(todayData,'purchase'), cpa=gcpa(todayData,'purchase');
-  const acv=gacv(todayData,'purchase'), roas=spend>0?acv/spend:0;
+  // ── 昨日整體 ──
+  const purchase=gv(todayData,'purchase');
+  const cpa=gcpa(todayData,'purchase');
+  const acv=gacv(todayData,'purchase');
+  const roas=spend>0?acv/spend:0;
   const ctr=parseFloat(todayData?.ctr||0);
   const convRate=todayData?.clicks>0?purchase/todayData.clicks*100:0;
+  const overallOk=cpa<thr.ok&&roas>=2;
 
-  // 月累計
+  // ── 月累計 ──
   const mo=extra.monthTotal||null;
-  const moPurchase=mo?gv(mo,'purchase'):0;
+  const moPurchase=mo?Math.round(gv(mo,'purchase')):0;
   const moAcv=mo?gacv(mo,'purchase'):0;
-  const moSpend=mo?parseFloat(mo.spend||0):0;
   const goalOrders=loadGoal(ci,'orders');
   const goalRev=loadGoal(ci,'revenue');
-  const nowDate=new Date(); const daysInMonth=new Date(nowDate.getFullYear(),nowDate.getMonth()+1,0).getDate();
-  const dayOfMonth=nowDate.getDate()-1; // 昨天是幾號
+  const nowDate=new Date();
+  const dayOfMonth=nowDate.getDate()-1;
+  const daysInMonth=new Date(nowDate.getFullYear(),nowDate.getMonth()+1,0).getDate();
   const daysLeft=daysInMonth-dayOfMonth;
   const needOrders=goalOrders>0?Math.max(0,goalOrders-moPurchase):0;
   const achRate=goalOrders>0?(moPurchase/goalOrders*100):0;
   const dailyAvg=dayOfMonth>0?moPurchase/dayOfMonth:0;
+  const onTrack=goalOrders>0?(dailyAvg*daysLeft+moPurchase>=goalOrders*0.95):null;
 
-  // 廣告組數
+  // ── 受眾分組 ──
+  const typeOrder=ci===0
+    ?['流量/互動/觀看','ASC','KOL','興趣','類似','RT','其他']
+    :['流量/互動/觀看','ASC','KOL','台灣興趣','海外興趣','類似','台灣RT','海外RT','其他'];
+  const typeData={};
+  for(const t of typeOrder) typeData[t]=sumType(adsToday,t,ci);
+  const totalSpend=Object.values(typeData).reduce((s,d)=>s+d.spend,0)||1;
+
+  // 分類受眾
+  const starTypes=[], bigBadTypes=[], zeroTypes=[];
+  for(const t of typeOrder){
+    const d=typeData[t]; if(d.spend<100) continue;
+    const pct=d.spend/totalSpend*100;
+    if(d.purchase===0&&d.spend>=400) zeroTypes.push({...d,type:t,pct});
+    else if(d.cpa>0&&d.cpa<thr.good) starTypes.push({...d,type:t,pct});
+    if(pct>25&&d.cpa>=thr.ok&&d.purchase>0) bigBadTypes.push({...d,type:t,pct});
+  }
+  starTypes.sort((a,b)=>a.cpa-b.cpa);
+
+  // ── 廣告組合點名（昨天 CPA 最好前兩組）──
+  const adsetMap={};
+  for(const ad of adsToday){
+    if(parseFloat(ad.spend||0)<=0) continue;
+    const camp=(ad.campaign_name||'').toUpperCase();
+    if(camp.includes('ASC')||camp.includes('RT')) continue;
+    const key=(ad.adset_name||'').trim(); if(!key) continue;
+    if(!adsetMap[key]) adsetMap[key]={name:key,spend:0,purchase:0,acv:0,cpa:0,roas:0,_ads:[]};
+    adsetMap[key].spend+=parseFloat(ad.spend||0);
+    adsetMap[key].purchase+=adv(ad,'purchase');
+    adsetMap[key].acv+=adacv(ad,'purchase');
+    adsetMap[key]._ads.push(ad);
+  }
+  for(const k of Object.keys(adsetMap)){
+    const g=adsetMap[k];
+    g.cpa=g.purchase>0?g.spend/g.purchase:0;
+    g.roas=g.spend>0?g.acv/g.spend:0;
+  }
+  const bestAdsets=Object.values(adsetMap)
+    .filter(g=>g.purchase>0&&g.cpa>0&&g.cpa<thr.ok)
+    .sort((a,b)=>a.cpa-b.cpa).slice(0,2);
+
+  // ── 素材（昨天花費排序，有購買） ──
+  const adList=mergeAdsByName(adsToday,ci)
+    .filter(ad=>adv(ad,'purchase')>0)
+    .sort((a,b)=>parseFloat(b.spend||0)-parseFloat(a.spend||0));
+
+  // ── 近14天素材 ──
+  const ads14d=extra.ads14d||[];
+  const map14={};
+  for(const ad of ads14d){
+    if(parseFloat(ad.spend||0)<=0) continue;
+    const type=classType(ad.campaign_name,ci);
+    if(type==='__SKIP__') continue;
+    const key=normName(ad.ad_name);
+    if(!map14[key]){
+      map14[key]=JSON.parse(JSON.stringify(ad));
+      map14[key].ad_name=key;
+    } else {
+      const base=map14[key];
+      base.spend=String(parseFloat(base.spend||0)+parseFloat(ad.spend||0));
+      const mArr=(f)=>{
+        if(!ad[f])return; if(!base[f]){base[f]=JSON.parse(JSON.stringify(ad[f]));return;}
+        for(const item of ad[f]){const ex=base[f].find(x=>x.action_type===item.action_type);if(ex)ex.value=String(parseFloat(ex.value||0)+parseFloat(item.value||0));else base[f].push(JSON.parse(JSON.stringify(item)));}
+      };
+      mArr('actions');mArr('action_values');
+      const sp=parseFloat(base.spend||0); base.cost_per_action_type=[];
+      if(base.actions)for(const a of base.actions){const v=parseFloat(a.value||0);if(v>0&&sp>0)base.cost_per_action_type.push({action_type:a.action_type,value:String((sp/v).toFixed(2))});}
+    }
+  }
+  const adList14=Object.values(map14)
+    .filter(ad=>adv(ad,'purchase')>=3&&parseFloat(ad.spend||0)>=500)
+    .map(ad=>({...ad,_cpa:adcpa(ad,'purchase'),_roas:parseFloat(ad.spend||0)>0?adacv(ad,'purchase')/parseFloat(ad.spend||0):0}))
+    .sort((a,b)=>parseFloat(b.spend||0)-parseFloat(a.spend||0));
+  const good14=adList14.filter(a=>a._cpa>0&&a._cpa<thr.good).sort((a,b)=>a._cpa-b._cpa).slice(0,3);
+  const bad14=adList14.filter(a=>a._roas>0&&a._roas<1.5).sort((a,b)=>a._roas-b._roas).slice(0,2);
+
+  // ── 廣告組數 ──
   const adsetToday=extra.adsetCountToday||0;
   const adsetYest=extra.adsetCountYesterday||0;
   const adsetDiff=adsetToday-adsetYest;
 
-  const typeOrder = ci===0
-    ? ['流量/互動/觀看','ASC','KOL','興趣','類似','RT','其他']
-    : ['流量/互動/觀看','ASC','KOL','台灣興趣','海外興趣','類似','台灣RT','海外RT','其他'];
-  const typeData={};
-  for(const t of typeOrder) typeData[t]=sumType(adsToday,t,ci);
+  // ────────────────────────────
+  // 口述稿：口語化，貼近範本
+  // ────────────────────────────
 
-  // 表現分類
-  const bestList=[], warnList=[], zeroList=[], highBudgetLowROAS=[];
-  const totalSpend=Object.values(typeData).reduce((s,d)=>s+d.spend,0)||1;
-  for(const t of typeOrder){
-    const d=typeData[t]; if(d.spend<100)continue;
-    if(d.purchase===0&&d.spend>=400) zeroList.push({type:t,spend:d.spend,pct:(d.spend/totalSpend*100)});
-    else if(d.cpa>0&&d.cpa<thr.good) bestList.push({type:t,...d,pct:(d.spend/totalSpend*100)});
-    else if(d.cpa>=thr.ok&&d.purchase>0) warnList.push({type:t,...d,pct:(d.spend/totalSpend*100)});
-    if(d.spend/totalSpend>0.3&&d.roas>0&&d.roas<2) highBudgetLowROAS.push({type:t,...d,pct:(d.spend/totalSpend*100)});
-  }
-  bestList.sort((a,b)=>a.cpa-b.cpa);
-  warnList.sort((a,b)=>b.spend-a.spend);
+  // P1：昨日整體（口語數字）
+  const spendStr='NT$'+Math.round(spend).toLocaleString();
+  const acvStr=acv>0?'NT$'+Math.round(acv).toLocaleString():'';
+  const cpaStr='NT$'+Math.round(cpa);
+  const overallWord=overallOk?'整體表現穩健':cpa<thr.ok?'整體還可以':'整體偏弱，需要調整';
+  let p1=`昨天跑了 <strong>${purchase}</strong> 單`;
+  if(acv>0) p1+=`、營業額 <strong>${acvStr}</strong>`;
+  p1+=`，廣告費 <strong>${spendStr}</strong>，CPA <strong style="color:${cpaCl(cpa,ci)}">${cpaStr}</strong>、ROAS <strong style="color:${rc(roas)}">${roas.toFixed(2)}x</strong>，轉換率 <strong>${convRate.toFixed(2)}%</strong>，${overallWord}。`;
 
-  // 素材
-  const adList=mergeAdsByName(adsToday,ci).filter(ad=>adv(ad,'purchase')>0).sort((a,b)=>parseFloat(b.spend||0)-parseFloat(a.spend||0));
-  const badAds=mergeAdsByName(adsToday,ci).filter(ad=>adcpa(ad,'purchase')>=thr.ok&&adv(ad,'purchase')>0).sort((a,b)=>adcpa(b,'purchase')-adcpa(a,'purchase'));
-
-  // ── 口述段落 ──
-  const cpaTag=cpa<thr.good?`<strong style="color:var(--green)">NT$${Math.round(cpa)}（優秀✅）</strong>`:cpa<thr.ok?`<strong style="color:var(--amber)">NT$${Math.round(cpa)}（普通）</strong>`:`<strong style="color:var(--red)">NT$${Math.round(cpa)}（偏高⚠️）</strong>`;
-  const roasTag=roas>=3?`<strong style="color:var(--green)">${roas.toFixed(2)}x（達標✅）</strong>`:roas>=2?`<strong style="color:var(--amber)">${roas.toFixed(2)}x（普通）</strong>`:`<strong style="color:var(--red)">${roas.toFixed(2)}x（偏低⚠️）</strong>`;
-
-  // P1 昨日整體
-  let p1=`昨天（${today}）共跑了 <strong>${purchase}</strong> 單，廣告費 <strong>NT$${Math.round(spend).toLocaleString()}</strong>，CPA ${cpaTag}，ROAS ${roasTag}，轉換率 <strong>${convRate.toFixed(2)}%</strong>。`;
-
-  // P2 月累計
+  // P2：月累計
   let p2='';
-  if(goalOrders>0||moPurchase>0){
-    const achStr=goalOrders>0?`達成率約 <strong>${achRate.toFixed(0)}%</strong>，`:'';
-    const moRevStr=goalRev>0?`、營業額 <strong>NT$${Math.round(moAcv).toLocaleString()}</strong>`:'';
-    p2=`月累計目前 <strong>${moPurchase}</strong> 單${moRevStr}，${achStr}`;
-    if(goalOrders>0&&daysLeft>0){
-      const onTrack=dailyAvg*daysLeft+moPurchase>=goalOrders*0.95;
-      p2+=`剩 ${daysLeft} 天還需要 <strong>${needOrders}</strong> 單，以目前日均約 ${dailyAvg.toFixed(0)} 單的速度<strong>${onTrack?'追得上✅':'有點吃力⚠️'}</strong>。`;
+  if(moPurchase>0){
+    const moRevStr=moAcv>0?`、營業額 <strong>NT$${Math.round(moAcv/10000).toFixed(0)}萬</strong>`:'';
+    p2=`月累計目前 <strong>${moPurchase}</strong> 單${moRevStr}`;
+    if(goalOrders>0){
+      p2+=`，達成率約 <strong style="color:${achRate>=80?'var(--green)':achRate>=60?'var(--amber)':'var(--red)'}">${achRate.toFixed(0)}%</strong>`;
+      if(daysLeft>0){
+        const dailyNeed=Math.ceil(needOrders/daysLeft);
+        const trackWord=onTrack?'是追得上的':'有點吃力⚠️';
+        p2+=`，剩 ${daysLeft} 天還需要 <strong>${needOrders}</strong> 單，以目前日均約 <strong>${dailyAvg.toFixed(0)}</strong> 單的速度<strong>${trackWord}</strong>。`;
+      } else { p2+=`。`; }
+    } else { p2+=`。`; }
+  }
+
+  // P3：受眾分組（對照範本：先說亮眼、再說大預算低效、再說零購買、最後點名最佳廣告組合）
+  let p3='受眾分組來看，';
+  const p3Parts=[];
+
+  // 亮眼受眾（預算偏低）
+  if(starTypes.length>0){
+    const lowBudget=starTypes.filter(s=>s.pct<15);
+    const highBudget=starTypes.filter(s=>s.pct>=15);
+    if(lowBudget.length>0){
+      const names=lowBudget.slice(0,2).map(s=>`<strong>${s.type}</strong>`).join('跟');
+      const cpaList=lowBudget.slice(0,2).map(s=>`NT$${Math.round(s.cpa)}`).join('跟');
+      const roasList=lowBudget.slice(0,2).map(s=>s.roas.toFixed(2)+'x').join('跟');
+      const spendTotal=lowBudget.slice(0,2).reduce((a,b)=>a+b.spend,0);
+      p3Parts.push(`昨天 ${names} 是最亮眼的，CPA 只要 ${cpaList}、ROAS 分別是 ${roasList}，但這${lowBudget.slice(0,2).length>1?lowBudget.slice(0,2).length+'組':'組'}預算加起來才 NT$${Math.round(spendTotal).toLocaleString()}，比例偏低，建議各拉高到 NT$1,500 左右放量。`);
+    } else if(highBudget.length>0){
+      const b=highBudget[0];
+      p3Parts.push(`昨天 <strong>${b.type}</strong> 表現最亮眼，CPA NT$${Math.round(b.cpa)}、ROAS ${b.roas.toFixed(2)}x，建議維持甚至加碼。`);
     }
   }
 
-  // P3 受眾分組（對照口述範本）
-  let p3='';
-  const totalTypeSpend=Object.values(typeData).reduce((s,d)=>s+d.spend,0)||1;
-
-  // 亮眼受眾：CPA好且預算偏低 → 建議加碼
-  if(bestList.length>0){
-    const boostItems=bestList.filter(b=>b.pct<15); // 佔比低的亮眼受眾
-    const goodItems=bestList.filter(b=>b.pct>=15);
-    if(boostItems.length>0){
-      const s=boostItems.map(b=>`<strong>${b.type}</strong>（CPA NT$${Math.round(b.cpa)}、ROAS ${b.roas.toFixed(2)}x）`).join('、');
-      const spendSum=boostItems.reduce((a,b)=>a+b.spend,0);
-      p3+=`受眾表現最亮眼的是 ${s}，但這${boostItems.length>1?boostItems.length+'組':'組'}預算加起來才 NT$${Math.round(spendSum).toLocaleString()}，比例偏低，建議各拉高到 NT$1,500 左右放量。`;
-    } else if(goodItems.length>0){
-      const s=goodItems.slice(0,2).map(b=>`<strong>${b.type}</strong>（CPA NT$${Math.round(b.cpa)}、ROAS ${b.roas.toFixed(2)}x，佔比 ${b.pct.toFixed(0)}%）`).join('、');
-      p3+=`受眾表現最亮眼的是 ${s}，建議維持甚至加碼。`;
+  // 高預算低效（佔比>25%且CPA差）
+  if(bigBadTypes.length>0){
+    const h=bigBadTypes[0];
+    // 找零購買廣告組
+    const zeroBadAdsets=[];
+    for(const ad of adsToday){
+      if(parseFloat(ad.spend||0)<200) continue;
+      if(classType(ad.campaign_name,ci)!==h.type) continue;
+      if(adv(ad,'purchase')===0) zeroBadAdsets.push(ad);
     }
-  }
-
-  // 高費低效：佔比高但 CPA 差 → 找出零購買廣告組名稱
-  if(highBudgetLowROAS.length>0||zeroList.length>0){
-    const bigType=highBudgetLowROAS.length>0?highBudgetLowROAS[0]:(warnList.length>0?warnList[0]:null);
-    if(bigType){
-      p3+=`<br><br><strong>${bigType.type}</strong> 昨天花了 NT$${Math.round(bigType.spend).toLocaleString()}，佔整體 ${bigType.pct.toFixed(0)}%，但 CPA NT$${Math.round(bigType.cpa)}、ROAS ${bigType.roas.toFixed(2)}x，效率偏差。`;
-      // 找出該類型裡零購買的廣告組
-      const zeroAdsets=adsToday.filter(ad=>{
-        if(parseFloat(ad.spend||0)<200) return false;
-        if(classType(ad.campaign_name,ci)!==bigType.type) return false;
-        const p=adv(ad,'purchase');
-        return p===0;
+    const zeroByAdset={};
+    for(const ad of zeroBadAdsets){
+      const k=(ad.adset_name||ad.ad_name||''); if(!k) continue;
+      if(!zeroByAdset[k]) zeroByAdset[k]={name:k,spend:0};
+      zeroByAdset[k].spend+=parseFloat(ad.spend||0);
+    }
+    const zeroAdsetList=Object.values(zeroByAdset).sort((a,b)=>b.spend-a.spend);
+    const zeroTotal=zeroAdsetList.reduce((s,a)=>s+a.spend,0);
+    let badStr=`<strong>${h.type}</strong> 昨天花了 NT$${Math.round(h.spend).toLocaleString()}、佔整體 ${h.pct.toFixed(0)}%，但 CPA 高達 NT$${Math.round(h.cpa)}`;
+    if(zeroAdsetList.length>0){
+      const shortNames=zeroAdsetList.slice(0,5).map(a=>{
+        // 取廣告組名稱去掉流水號，保留有意義的部分
+        return a.name.replace(/\s*[-_]\s*\d{4,}$/,'').replace(/\s*-\s*0[0-9]{3,}$/,'').trim();
       });
-      const zeroNames=[...new Set(zeroAdsets.map(a=>{
-        // 取廣告組名稱中有意義的部分（去掉日期編號）
-        const name=(a.adset_name||a.ad_name||'');
-        return name.replace(/[-_]\d{4,}$/,'').replace(/\s*-\s*0\d{3,}$/,'').trim();
-      }))].slice(0,5);
-      const zeroTotal=zeroAdsets.reduce((s,a)=>s+parseFloat(a.spend||0),0);
-      if(zeroNames.length>0){
-        p3+=`裡面有 ${zeroNames.length} 個廣告組花了將近 NT$${Math.round(zeroTotal).toLocaleString()} 但一單都沒出，分別是${zeroNames.map(n=>`【${n}】`).join('、')}，建議今天直接暫停，把預算集中給表現好的組合。`;
-      } else {
-        p3+=`建議進後台確認素材組成，暫停低效廣告組。`;
-      }
+      badStr+=`，原因是裡面有 ${zeroAdsetList.length} 個廣告組花了將近 NT$${Math.round(zeroTotal).toLocaleString()} 但一單都沒出，分別是${shortNames.map(n=>`【${n}】`).join('、')}，建議今天直接暫停，把預算集中給表現好的組合。`;
+    } else {
+      badStr+=`，建議檢查素材表現，把低效廣告組暫停。`;
     }
-    // 其他零購買類型
-    const otherZero=zeroList.filter(z=>!highBudgetLowROAS.find(h=>h.type===z.type));
-    if(otherZero.length>0){
-      const names=otherZero.map(z=>`${z.type}（NT$${Math.round(z.spend).toLocaleString()}）`).join('、');
-      p3+=`<br><br>另外 ${names} 也是零購買，建議一併暫停。`;
-    }
-  } else if(zeroList.length>0){
-    const zTotal=zeroList.reduce((s,z)=>s+z.spend,0);
-    const names=zeroList.map(z=>`${z.type}（NT$${Math.round(z.spend).toLocaleString()}）`).join('、');
-    p3+=`<br><br>⚠️ ${names} 有花費但零購買，合計燒掉 NT$${Math.round(zTotal).toLocaleString()}，建議今天直接暫停。`;
+    p3Parts.push(badStr);
+  } else if(zeroTypes.length>0&&bigBadTypes.length===0){
+    // 沒有大預算低效，但有零購買
+    const zTotal=zeroTypes.reduce((s,z)=>s+z.spend,0);
+    const names=zeroTypes.map(z=>`<strong>${z.type}</strong>（NT$${Math.round(z.spend).toLocaleString()}）`).join('、');
+    p3Parts.push(`${names} 有花費但零購買，合計燒掉 NT$${Math.round(zTotal).toLocaleString()}，建議今天直接暫停。`);
   }
 
   // 最佳廣告組合點名
-  const bestAdsets=adsToday.filter(ad=>parseFloat(ad.spend||0)>200&&adv(ad,'purchase')>0)
-    .map(ad=>({
-      name:(ad.adset_name||ad.ad_name||''),
-      spend:parseFloat(ad.spend||0),
-      cpa:adcpa(ad,'purchase'),
-      roas:parseFloat(ad.spend||0)>0?adacv(ad,'purchase')/parseFloat(ad.spend||0):0,
-      purchase:adv(ad,'purchase')
-    }))
-    .filter(a=>a.cpa>0&&a.cpa<thr.ok)
-    .sort((a,b)=>a.cpa-b.cpa)
-    .slice(0,2);
   if(bestAdsets.length>0){
-    const bStr=bestAdsets.map(a=>{
-      const n=a.name;
-      return `【${n}】CPA NT$${Math.round(a.cpa)}、ROAS ${a.roas.toFixed(2)}x`;
-    }).join('，以及 ');
-    p3+=`<br><br>昨天表現最好的廣告組合是 ${bStr}，這${bestAdsets.length>1?'兩':''}組今天建議維持甚至加碼。`;
+    const bStr=bestAdsets.map(g=>`<strong>${g.name}</strong>，CPA NT$${Math.round(g.cpa)}、ROAS ${g.roas.toFixed(2)}x`).join('，以及 ');
+    p3Parts.push(`昨天表現最好的廣告組合是 ${bStr}，這${bestAdsets.length>1?'兩':''}組今天建議維持甚至加碼。`);
   }
 
-  // P4 素材（加碼 + 暫停兩個方向）
+  if(p3Parts.length>0) p3+=p3Parts.join('<br><br>');
+  else p3='';
+
+  // P4：近14天素材（先說好的，再說差的）
   let p4='';
-  // 加碼素材：CPA好且有購買
-  const boostAds=mergeAdsByName(adsToday,ci)
-    .filter(ad=>adv(ad,'purchase')>0&&adcpa(ad,'purchase')>0&&adcpa(ad,'purchase')<thr.good)
-    .sort((a,b)=>adcpa(a,'purchase')-adcpa(b,'purchase'))
-    .slice(0,3);
-  // 暫停素材：ROAS極低
-  const killAds=mergeAdsByName(adsToday,ci)
-    .filter(ad=>{
-      const sp=parseFloat(ad.spend||0); if(sp<300)return false;
-      const r=sp>0?adacv(ad,'purchase')/sp:0;
-      return r>0&&r<1.5;
-    })
-    .sort((a,b)=>{
-      const ra=parseFloat(a.spend||0)>0?adacv(a,'purchase')/parseFloat(a.spend||0):0;
-      const rb=parseFloat(b.spend||0)>0?adacv(b,'purchase')/parseFloat(b.spend||0):0;
-      return ra-rb;
-    })
-    .slice(0,2);
-
-  if(boostAds.length>0){
-    const bStr=boostAds.map(ad=>{
-      const n=(ad.ad_name||'').length>18?(ad.ad_name||'').slice(0,18)+'…':(ad.ad_name||'');
-      const r=parseFloat(ad.spend||0)>0?adacv(ad,'purchase')/parseFloat(ad.spend||0):0;
-      return `【${n}】CPA NT$${Math.round(adcpa(ad,'purchase'))}、ROAS ${r.toFixed(2)}x`;
-    }).join('，');
-    p4+=`素材這邊，昨天 CPA 最漂亮的是 ${bStr}，建議各加預算 20-30% 放量。`;
-  } else if(adList.length>0){
-    // fallback：花費最高
-    const top=adList[0];
-    const tc=adcpa(top,'purchase'),tr=parseFloat(top.spend||0)>0?adacv(top,'purchase')/parseFloat(top.spend||0):0;
-    const tn=(top.ad_name||'').length>22?(top.ad_name||'').slice(0,22)+'…':(top.ad_name||'');
-    p4+=`花費最高素材是【${tn}】，CPA NT$${Math.round(tc)}、ROAS ${tr.toFixed(2)}x。`;
+  if(good14.length>0){
+    const gStr=good14.map(a=>`<strong>${a.ad_name}</strong>，ROAS ${a._roas.toFixed(2)}x、CPA NT$${Math.round(a._cpa)}`).join('，');
+    p4+=`素材這邊，近14天表現最好的是 ${gStr}，這${good14.length>1?good14.length+'支':'支'}建議各加預算 20-30% 放量。`;
   }
-  if(killAds.length>0){
-    const kStr=killAds.map(ad=>{
-      const n=(ad.ad_name||'').length>18?(ad.ad_name||'').slice(0,18)+'…':(ad.ad_name||'');
-      const r=parseFloat(ad.spend||0)>0?adacv(ad,'purchase')/parseFloat(ad.spend||0):0;
-      return `【${n}】ROAS ${r.toFixed(2)}x`;
-    }).join('、');
-    p4+=`<br><br>反過來，${kStr} 已經在虧錢，建議這週直接暫停，預算挪給表現好的素材。`;
+  if(bad14.length>0){
+    const bStr=bad14.map(a=>`<strong>${a.ad_name}</strong> ROAS ${a._roas.toFixed(2)}x`).join('、');
+    p4+=`<br><br>反過來，${bStr} 已經在虧錢，建議這週直接暫停，預算挪給表現好的素材。`;
   }
 
-  // P5 廣告組數 + 整體方向
+  // P5：廣告組數 + 整體方向
   let p5='';
   if(adsetToday>0||adsetYest>0){
-    const diffStr=adsetDiff>0?`新增 ${adsetDiff} 組，`:adsetDiff<0?`減少 ${Math.abs(adsetDiff)} 組，`:'組數不變，';
-    p5+=`廣告組數從前天 <strong>${adsetYest}</strong> 組變為昨天 <strong>${adsetToday}</strong> 組，${diffStr}目前持續監控中。`;
+    const diffStr=adsetDiff>0?`新增了 ${adsetDiff} 組`:adsetDiff<0?`減少了 ${Math.abs(adsetDiff)} 組`:'組數不變';
+    p5+=`廣告組數從前天 <strong>${adsetYest}</strong> 組增加到昨天 <strong>${adsetToday}</strong> 組，${diffStr}，目前持續觀察中。`;
   }
-  const hasIssue=zeroList.length>0||highBudgetLowROAS.length>0||killAds.length>0;
-  if(hasIssue){
-    const actions=[];
-    if(zeroList.length>0||highBudgetLowROAS.length>0){
-      const badTypes=[...new Set([...zeroList.map(z=>z.type),...highBudgetLowROAS.map(h=>h.type)])];
-      actions.push(`把預算從${badTypes.join('、')}的低效廣告組抽出來`);
-    }
-    if(killAds.length>0) actions.push(`暫停 ROAS 低於 1.5x 的素材`);
-    if(bestAdsets.length>0) actions.push(`集中給${bestAdsets.slice(0,2).map(a=>{const n=a.name.length>12?a.name.slice(0,12)+'…':a.name;return '【'+n+'】';}).join('、')}等高效組合`);
+  // 整體方向
+  const actionParts=[];
+  if(zeroTypes.length>0||bigBadTypes.length>0){
+    const badTypeNames=[...new Set([...zeroTypes.map(z=>z.type),...bigBadTypes.map(h=>h.type)])];
+    actionParts.push(`把預算從${badTypeNames.map(n=>`<strong>${n}</strong>`).join('、')}的零購買廣告組抽出來`);
+  }
+  if(bad14.length>0) actionParts.push(`暫停低效素材`);
+  if(bestAdsets.length>0){
+    actionParts.push(`集中給 ${bestAdsets.slice(0,2).map(g=>`<strong>${g.name.length>15?g.name.slice(0,15)+'…':g.name}</strong>`).join('、')} 等高效組合`);
+  }
+  if(actionParts.length>0){
     const dailyTarget=goalOrders>0&&daysLeft>0?Math.ceil(needOrders/daysLeft):0;
-    p5+=`<br><br>整體方向就是${actions.join('，')}，${dailyTarget>0?`目標月底前把日均單數維持在 <strong>${dailyTarget}</strong> 單以上就能達標。`:'持續優化效率。'}`;
+    p5+=`<br><br>整體方向就是${actionParts.join('，')}，${dailyTarget>0?`目標月底前把日均單數維持在 <strong>${dailyTarget}</strong> 單以上就能達標。`:'持續優化效率。'}`;
   }
 
-  // P6 近14天素材亮點
-  let p6='';
-  const ads14d=extra.ads14d||[];
-  if(ads14d.length>0){
-    // 合併14天素材
-    const map14={};
-    for(const ad of ads14d){
-      if(parseFloat(ad.spend||0)<=0)continue;
-      const type=classType(ad.campaign_name,ci);
-      if(type==='__SKIP__')continue;
-      const key=normName(ad.ad_name);
-      if(!map14[key]){
-        map14[key]=JSON.parse(JSON.stringify(ad));
-        map14[key].ad_name=key; map14[key]._type=type;
-      } else {
-        const base=map14[key];
-        base.spend=String(parseFloat(base.spend||0)+parseFloat(ad.spend||0));
-        const mArr=(f)=>{
-          if(!ad[f])return; if(!base[f]){base[f]=JSON.parse(JSON.stringify(ad[f]));return;}
-          for(const item of ad[f]){const ex=base[f].find(x=>x.action_type===item.action_type);if(ex)ex.value=String(parseFloat(ex.value||0)+parseFloat(item.value||0));else base[f].push(JSON.parse(JSON.stringify(item)));}
-        };
-        mArr('actions');mArr('action_values');
-        const sp=parseFloat(base.spend||0); base.cost_per_action_type=[];
-        if(base.actions)for(const a of base.actions){const v=parseFloat(a.value||0);if(v>0&&sp>0)base.cost_per_action_type.push({action_type:a.action_type,value:String((sp/v).toFixed(2))});}
-      }
-    }
-    const adList14=Object.values(map14)
-      .filter(ad=>adv(ad,'purchase')>0)
-      .map(ad=>({
-        ...ad,
-        _cpa:adcpa(ad,'purchase'),
-        _roas:parseFloat(ad.spend||0)>0?adacv(ad,'purchase')/parseFloat(ad.spend||0):0,
-        _purchase:adv(ad,'purchase')
-      }))
-      .sort((a,b)=>parseFloat(b.spend||0)-parseFloat(a.spend||0));
-
-    // 分類：好素材 & 差素材
-    const good14=adList14.filter(a=>a._cpa>0&&a._cpa<thr.good).sort((a,b)=>a._cpa-b._cpa).slice(0,3);
-    const bad14=adList14.filter(a=>a._roas>0&&a._roas<1.5&&parseFloat(a.spend||0)>500).sort((a,b)=>a._roas-b._roas).slice(0,2);
-
-    if(good14.length>0){
-      const gStr=good14.map(a=>`【${a.ad_name}】CPA NT$${Math.round(a._cpa)}、ROAS ${a._roas.toFixed(2)}x`).join('，');
-      p6+=`近14天表現最好的素材：${gStr}，這${good14.length>1?good14.length+'支':'支'}建議各加預算 20-30% 放量。`;
-    }
-    if(bad14.length>0){
-      const bStr=bad14.map(a=>`【${a.ad_name}】ROAS ${a._roas.toFixed(2)}x`).join('、');
-      p6+=`<br><br>反過來，${bStr} 已經在虧錢，建議這週直接暫停，預算挪給表現好的素材。`;
-    }
-  }
-
-  // ── 純文字版 ──
+  // ── 純文字版（複製用）──
+  function strip(s){ return (s||'').replace(/<[^>]+>/g,'').replace(/\n/g,' ').trim(); }
   const plainLines=[
     `【${client.name} 廣告日報 ${today}】`,
     '',
-    `昨天共跑了 ${purchase} 單，廣告費 NT$${Math.round(spend).toLocaleString()}，CPA NT$${Math.round(cpa)}（${cpa<thr.good?'優秀':cpa<thr.ok?'普通':'偏高'}），ROAS ${roas.toFixed(2)}x，轉換率 ${convRate.toFixed(2)}%。`,
+    strip(p1),
   ];
-  if(p2) plainLines.push('',p2.replace(/<[^>]+>/g,''));
-  if(p3) plainLines.push('',p3.replace(/<[^>]+>/g,'').replace(/\n/g,' '));
-  if(p4) plainLines.push('',p4.replace(/<[^>]+>/g,'').replace(/\n/g,' '));
-  if(p6) plainLines.push('',p6.replace(/<[^>]+>/g,'').replace(/\n/g,' '));
-  if(p5) plainLines.push('',p5.replace(/<[^>]+>/g,'').replace(/\n/g,' '));
+  if(p2) plainLines.push('', strip(p2));
+  if(p3) plainLines.push('', strip(p3));
+  if(p4) plainLines.push('', strip(p4));
+  if(p5) plainLines.push('', strip(p5));
   const plain=plainLines.join('\n').trim();
 
   // ── 月目標輸入框 ──
@@ -687,20 +661,23 @@ function buildDailyReport(ci, todayData, adsToday, extra={}) {
       <div style="font-size:11px;color:var(--text3);padding-bottom:4px">↩ 輸入後按 Enter 自動更新</div>
     </div>`;
 
+  // ── 數字卡片 ──
+  const adsetCountHtml=adsetToday>0?`<div class="kpi-chip"><div class="kpi-chip-label">廣告組數</div><div class="kpi-chip-value">${adsetYest}<span style="font-size:12px;color:${adsetDiff>0?'var(--green)':adsetDiff<0?'var(--red)':'var(--text3)'}"> → ${adsetToday}</span></div></div>`:'';
+
   return `
     <div class="report-section">
       <div class="report-section-title">📊 昨日關鍵數字</div>
       <div class="kpi-chips">
         <div class="kpi-chip"><div class="kpi-chip-label">購買單數</div><div class="kpi-chip-value">${purchase}</div></div>
         <div class="kpi-chip"><div class="kpi-chip-label">廣告費</div><div class="kpi-chip-value" style="font-size:14px">NT$${Math.round(spend).toLocaleString()}</div></div>
+        ${acv>0?`<div class="kpi-chip"><div class="kpi-chip-label">營業額</div><div class="kpi-chip-value" style="font-size:13px">NT$${Math.round(acv).toLocaleString()}</div></div>`:''}
         <div class="kpi-chip"><div class="kpi-chip-label">CPA ★</div><div class="kpi-chip-value" style="font-size:14px;color:${cpaCl(cpa,ci)}">NT$${Math.round(cpa)}</div></div>
         <div class="kpi-chip"><div class="kpi-chip-label">ROAS</div><div class="kpi-chip-value" style="color:${rc(roas)}">${roas.toFixed(2)}x</div></div>
         <div class="kpi-chip"><div class="kpi-chip-label">轉換率</div><div class="kpi-chip-value">${convRate.toFixed(2)}%</div></div>
         <div class="kpi-chip"><div class="kpi-chip-label">CTR</div><div class="kpi-chip-value">${ctr.toFixed(2)}%</div></div>
-        ${moPurchase>0?`<div class="kpi-chip"><div class="kpi-chip-label">月累計單數</div><div class="kpi-chip-value">${moPurchase}</div></div>`:''}
-        ${moAcv>0?`<div class="kpi-chip"><div class="kpi-chip-label">月累計營業額</div><div class="kpi-chip-value" style="font-size:13px">NT$${Math.round(moAcv).toLocaleString()}</div></div>`:''}
+        ${moPurchase>0?`<div class="kpi-chip"><div class="kpi-chip-label">月累計</div><div class="kpi-chip-value">${moPurchase} 單</div></div>`:''}
         ${goalOrders>0?`<div class="kpi-chip"><div class="kpi-chip-label">月達成率</div><div class="kpi-chip-value" style="color:${achRate>=80?'var(--green)':achRate>=60?'var(--amber)':'var(--red)'}">${achRate.toFixed(0)}%</div></div>`:''}
-        ${adsetToday>0?`<div class="kpi-chip"><div class="kpi-chip-label">廣告組數</div><div class="kpi-chip-value">${adsetYest}<span style="font-size:12px;color:${adsetDiff>0?'var(--green)':adsetDiff<0?'var(--red)':'var(--text3)'}"> → ${adsetToday}</span></div></div>`:''}
+        ${adsetCountHtml}
       </div>
     </div>
     <div class="report-section">
@@ -709,7 +686,7 @@ function buildDailyReport(ci, todayData, adsToday, extra={}) {
     </div>
     <div class="report-section">
       <div class="report-section-title">🗣️ 口述報告（可直接說給老闆聽）</div>
-      <div class="report-text" id="report-html-${ci}">${[p1, p2?'<br><br>'+p2:'', p3?'<br><br>'+p3:'', p4?'<br><br>'+p4:'', p6?'<br><br>'+p6:'', p5?'<br><br>'+p5:''].join('')}</div>
+      <div class="report-text">${[p1, p2?'<br><br>'+p2:'', p3?'<br><br>'+p3:'', p4?'<br><br>'+p4:'', p5?'<br><br>'+p5:''].join('')}</div>
     </div>
     <textarea id="report-plain-${ci}" style="position:absolute;left:-9999px;top:-9999px">${plain}</textarea>`;
 }
