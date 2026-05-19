@@ -609,10 +609,7 @@ function buildDailyReport(ci, todayData, adsToday, extra={}) {
 
   // P5：廣告組數 + 整體方向
   let p5='';
-  if(adsetToday>0||adsetYest>0){
-    const diffStr=adsetDiff>0?`新增了 ${adsetDiff} 組`:adsetDiff<0?`減少了 ${Math.abs(adsetDiff)} 組`:'組數不變';
-    p5+=`廣告組數從前天 <strong>${adsetYest}</strong> 組增加到昨天 <strong>${adsetToday}</strong> 組，${diffStr}，目前持續觀察中。`;
-  }
+  // 廣告組數顯示已移除
   // 整體方向
   const actionParts=[];
   if(zeroTypes.length>0||bigBadTypes.length>0){
@@ -677,7 +674,6 @@ function buildDailyReport(ci, todayData, adsToday, extra={}) {
         <div class="kpi-chip"><div class="kpi-chip-label">CTR</div><div class="kpi-chip-value">${ctr.toFixed(2)}%</div></div>
         ${moPurchase>0?`<div class="kpi-chip"><div class="kpi-chip-label">月累計</div><div class="kpi-chip-value">${moPurchase} 單</div></div>`:''}
         ${goalOrders>0?`<div class="kpi-chip"><div class="kpi-chip-label">月達成率</div><div class="kpi-chip-value" style="color:${achRate>=80?'var(--green)':achRate>=60?'var(--amber)':'var(--red)'}">${achRate.toFixed(0)}%</div></div>`:''}
-        ${adsetCountHtml}
       </div>
     </div>
     <div class="report-section">
