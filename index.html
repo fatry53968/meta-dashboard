@@ -305,7 +305,16 @@ async function fetchClientData(ci) {
     res.adsYesterday=res.adsYesterday.concat(ay||[]);
     res.adsPrev=res.adsPrev.concat(ap||[]);
   }
-  const uniqAdsets=(ads)=>new Set(ads.filter(a=>parseFloat(a.spend||0)>0).map(a=>a.adset_name||'')).size;
+  // 廣告組數：排除 ASC / RT，只算昨天有花費的進行中廣告組
+  const uniqAdsets=(ads)=>new Set(
+    ads.filter(a=>{
+      if(parseFloat(a.spend||0)<=0) return false;
+      const t=(a.campaign_name||'').toUpperCase();
+      if(t.includes('ASC')) return false;
+      if(t.includes('RT')&&!t.includes('INTEREST')&&!t.includes('興趣')) return false;
+      return true;
+    }).map(a=>a.adset_name||a.ad_name||'')
+  ).size;
   return{
     today:mergeInsights(res.today), yesterday:mergeInsights(res.yesterday),
     adsToday:res.adsToday, adsYesterday:res.adsYesterday,
@@ -450,45 +459,122 @@ function buildDailyReport(ci, todayData, adsToday, extra={}) {
     }
   }
 
-  // P3 受眾分組
+  // P3 受眾分組（對照口述範本）
   let p3='';
-  // 亮眼受眾
+  const totalTypeSpend=Object.values(typeData).reduce((s,d)=>s+d.spend,0)||1;
+
+  // 亮眼受眾：CPA好且預算偏低 → 建議加碼
   if(bestList.length>0){
-    const stars=bestList.slice(0,2).map(b=>`<strong>${b.type}</strong>（CPA NT$${Math.round(b.cpa)}、ROAS ${b.roas.toFixed(2)}x，佔比 ${b.pct.toFixed(0)}%）`).join('、');
-    p3+=`受眾表現最亮眼的是 ${stars}。`;
-  }
-  // 高預算低效
-  if(highBudgetLowROAS.length>0){
-    const h=highBudgetLowROAS[0];
-    p3+=`<br><br><strong>${h.type}</strong> 佔預算 ${h.pct.toFixed(0)}%，但 CPA NT$${Math.round(h.cpa)}、ROAS ${h.roas.toFixed(2)}x，是整體 CPA 偏高的主因，建議進後台確認素材組成。`;
-  }
-  // 零購買
-  if(zeroList.length>0){
-    const zTotal=zeroList.reduce((s,z)=>s+z.spend,0);
-    const names=zeroList.map(z=>`${z.type}（NT$${Math.round(z.spend).toLocaleString()}）`).join('、');
-    p3+=`<br><br>⚠️ ${names} 有花費但零購買，合計燒掉 NT$${Math.round(zTotal).toLocaleString()}，建議今天直接暫停，預算集中給表現好的組合。`;
+    const boostItems=bestList.filter(b=>b.pct<15); // 佔比低的亮眼受眾
+    const goodItems=bestList.filter(b=>b.pct>=15);
+    if(boostItems.length>0){
+      const s=boostItems.map(b=>`<strong>${b.type}</strong>（CPA NT$${Math.round(b.cpa)}、ROAS ${b.roas.toFixed(2)}x）`).join('、');
+      const spendSum=boostItems.reduce((a,b)=>a+b.spend,0);
+      p3+=`受眾表現最亮眼的是 ${s}，但這${boostItems.length>1?boostItems.length+'組':'組'}預算加起來才 NT$${Math.round(spendSum).toLocaleString()}，比例偏低，建議各拉高到 NT$1,500 左右放量。`;
+    } else if(goodItems.length>0){
+      const s=goodItems.slice(0,2).map(b=>`<strong>${b.type}</strong>（CPA NT$${Math.round(b.cpa)}、ROAS ${b.roas.toFixed(2)}x，佔比 ${b.pct.toFixed(0)}%）`).join('、');
+      p3+=`受眾表現最亮眼的是 ${s}，建議維持甚至加碼。`;
+    }
   }
 
-  // P4 素材
+  // 高費低效：佔比高但 CPA 差 → 找出零購買廣告組名稱
+  if(highBudgetLowROAS.length>0||zeroList.length>0){
+    const bigType=highBudgetLowROAS.length>0?highBudgetLowROAS[0]:(warnList.length>0?warnList[0]:null);
+    if(bigType){
+      p3+=`<br><br><strong>${bigType.type}</strong> 昨天花了 NT$${Math.round(bigType.spend).toLocaleString()}，佔整體 ${bigType.pct.toFixed(0)}%，但 CPA NT$${Math.round(bigType.cpa)}、ROAS ${bigType.roas.toFixed(2)}x，效率偏差。`;
+      // 找出該類型裡零購買的廣告組
+      const zeroAdsets=adsToday.filter(ad=>{
+        if(parseFloat(ad.spend||0)<200) return false;
+        if(classType(ad.campaign_name,ci)!==bigType.type) return false;
+        const p=adv(ad,'purchase');
+        return p===0;
+      });
+      const zeroNames=[...new Set(zeroAdsets.map(a=>{
+        // 取廣告組名稱中有意義的部分（去掉日期編號）
+        const name=(a.adset_name||a.ad_name||'');
+        return name.replace(/[-_]\d{4,}$/,'').replace(/\s*-\s*0\d{3,}$/,'').trim();
+      }))].slice(0,5);
+      const zeroTotal=zeroAdsets.reduce((s,a)=>s+parseFloat(a.spend||0),0);
+      if(zeroNames.length>0){
+        p3+=`裡面有 ${zeroNames.length} 個廣告組花了將近 NT$${Math.round(zeroTotal).toLocaleString()} 但一單都沒出，分別是${zeroNames.map(n=>`【${n}】`).join('、')}，建議今天直接暫停，把預算集中給表現好的組合。`;
+      } else {
+        p3+=`建議進後台確認素材組成，暫停低效廣告組。`;
+      }
+    }
+    // 其他零購買類型
+    const otherZero=zeroList.filter(z=>!highBudgetLowROAS.find(h=>h.type===z.type));
+    if(otherZero.length>0){
+      const names=otherZero.map(z=>`${z.type}（NT$${Math.round(z.spend).toLocaleString()}）`).join('、');
+      p3+=`<br><br>另外 ${names} 也是零購買，建議一併暫停。`;
+    }
+  } else if(zeroList.length>0){
+    const zTotal=zeroList.reduce((s,z)=>s+z.spend,0);
+    const names=zeroList.map(z=>`${z.type}（NT$${Math.round(z.spend).toLocaleString()}）`).join('、');
+    p3+=`<br><br>⚠️ ${names} 有花費但零購買，合計燒掉 NT$${Math.round(zTotal).toLocaleString()}，建議今天直接暫停。`;
+  }
+
+  // 最佳廣告組合點名
+  const bestAdsets=adsToday.filter(ad=>parseFloat(ad.spend||0)>200&&adv(ad,'purchase')>0)
+    .map(ad=>({
+      name:(ad.adset_name||ad.ad_name||''),
+      spend:parseFloat(ad.spend||0),
+      cpa:adcpa(ad,'purchase'),
+      roas:parseFloat(ad.spend||0)>0?adacv(ad,'purchase')/parseFloat(ad.spend||0):0,
+      purchase:adv(ad,'purchase')
+    }))
+    .filter(a=>a.cpa>0&&a.cpa<thr.ok)
+    .sort((a,b)=>a.cpa-b.cpa)
+    .slice(0,2);
+  if(bestAdsets.length>0){
+    const bStr=bestAdsets.map(a=>{
+      const n=a.name.length>20?a.name.slice(0,20)+'…':a.name;
+      return `【${n}】CPA NT$${Math.round(a.cpa)}、ROAS ${a.roas.toFixed(2)}x`;
+    }).join('，以及 ');
+    p3+=`<br><br>昨天表現最好的廣告組合是 ${bStr}，這${bestAdsets.length>1?'兩':''}組今天建議維持甚至加碼。`;
+  }
+
+  // P4 素材（加碼 + 暫停兩個方向）
   let p4='';
-  if(adList.length>0){
-    const topAd=adList[0];
-    const tc=adcpa(topAd,'purchase'),tr=parseFloat(topAd.spend||0)>0?adacv(topAd,'purchase')/parseFloat(topAd.spend||0):0;
-    const tn=(topAd.ad_name||'').length>25?(topAd.ad_name||'').slice(0,25)+'…':(topAd.ad_name||'');
-    p4+=`花費最高素材是【${tn}】，CPA NT$${Math.round(tc)}、購買 ${adv(topAd,'purchase')} 筆、ROAS ${tr.toFixed(2)}x。`;
-    if(adList.length>1){
-      const others=adList.slice(1,3).map(ad=>{
-        const c=adcpa(ad,'purchase'),r=parseFloat(ad.spend||0)>0?adacv(ad,'purchase')/parseFloat(ad.spend||0):0;
-        const n=(ad.ad_name||'').length>20?(ad.ad_name||'').slice(0,20)+'…':(ad.ad_name||'');
-        return `【${n}】CPA NT$${Math.round(c)}、ROAS ${r.toFixed(2)}x`;
-      }).join('、');
-      p4+=`其次是 ${others}。`;
-    }
-    if(badAds.length>0){
-      const bad=badAds[0];
-      const bn=(bad.ad_name||'').length>25?(bad.ad_name||'').slice(0,25)+'…':(bad.ad_name||'');
-      p4+=`<br><br>表現最差：【${bn}】CPA NT$${Math.round(adcpa(bad,'purchase'))}，ROAS ${(parseFloat(bad.spend||0)>0?adacv(bad,'purchase')/parseFloat(bad.spend||0):0).toFixed(2)}x，建議調整或暫停。`;
-    }
+  // 加碼素材：CPA好且有購買
+  const boostAds=mergeAdsByName(adsToday,ci)
+    .filter(ad=>adv(ad,'purchase')>0&&adcpa(ad,'purchase')>0&&adcpa(ad,'purchase')<thr.good)
+    .sort((a,b)=>adcpa(a,'purchase')-adcpa(b,'purchase'))
+    .slice(0,3);
+  // 暫停素材：ROAS極低
+  const killAds=mergeAdsByName(adsToday,ci)
+    .filter(ad=>{
+      const sp=parseFloat(ad.spend||0); if(sp<300)return false;
+      const r=sp>0?adacv(ad,'purchase')/sp:0;
+      return r>0&&r<1.5;
+    })
+    .sort((a,b)=>{
+      const ra=parseFloat(a.spend||0)>0?adacv(a,'purchase')/parseFloat(a.spend||0):0;
+      const rb=parseFloat(b.spend||0)>0?adacv(b,'purchase')/parseFloat(b.spend||0):0;
+      return ra-rb;
+    })
+    .slice(0,2);
+
+  if(boostAds.length>0){
+    const bStr=boostAds.map(ad=>{
+      const n=(ad.ad_name||'').length>18?(ad.ad_name||'').slice(0,18)+'…':(ad.ad_name||'');
+      const r=parseFloat(ad.spend||0)>0?adacv(ad,'purchase')/parseFloat(ad.spend||0):0;
+      return `【${n}】CPA NT$${Math.round(adcpa(ad,'purchase'))}、ROAS ${r.toFixed(2)}x`;
+    }).join('，');
+    p4+=`素材這邊，昨天 CPA 最漂亮的是 ${bStr}，建議各加預算 20-30% 放量。`;
+  } else if(adList.length>0){
+    // fallback：花費最高
+    const top=adList[0];
+    const tc=adcpa(top,'purchase'),tr=parseFloat(top.spend||0)>0?adacv(top,'purchase')/parseFloat(top.spend||0):0;
+    const tn=(top.ad_name||'').length>22?(top.ad_name||'').slice(0,22)+'…':(top.ad_name||'');
+    p4+=`花費最高素材是【${tn}】，CPA NT$${Math.round(tc)}、ROAS ${tr.toFixed(2)}x。`;
+  }
+  if(killAds.length>0){
+    const kStr=killAds.map(ad=>{
+      const n=(ad.ad_name||'').length>18?(ad.ad_name||'').slice(0,18)+'…':(ad.ad_name||'');
+      const r=parseFloat(ad.spend||0)>0?adacv(ad,'purchase')/parseFloat(ad.spend||0):0;
+      return `【${n}】ROAS ${r.toFixed(2)}x`;
+    }).join('、');
+    p4+=`<br><br>反過來，${kStr} 已經在虧錢，建議這週直接暫停，預算挪給表現好的素材。`;
   }
 
   // P5 廣告組數 + 整體方向
@@ -497,14 +583,17 @@ function buildDailyReport(ci, todayData, adsToday, extra={}) {
     const diffStr=adsetDiff>0?`新增 ${adsetDiff} 組，`:adsetDiff<0?`減少 ${Math.abs(adsetDiff)} 組，`:'組數不變，';
     p5+=`廣告組數從前天 <strong>${adsetYest}</strong> 組變為昨天 <strong>${adsetToday}</strong> 組，${diffStr}目前持續監控中。`;
   }
-  // 整體方向
-  const hasIssue=zeroList.length>0||highBudgetLowROAS.length>0||badAds.length>0;
+  const hasIssue=zeroList.length>0||highBudgetLowROAS.length>0||killAds.length>0;
   if(hasIssue){
     const actions=[];
-    if(zeroList.length>0) actions.push(`暫停零購買的 ${zeroList.map(z=>z.type).join('、')}`);
-    if(badAds.length>0){const bn=(badAds[0].ad_name||'').slice(0,15);actions.push(`縮減或暫停【${bn}…】等高 CPA 素材`);}
-    if(bestList.length>0) actions.push(`把預算集中給 ${bestList.slice(0,2).map(b=>b.type).join('、')}`);
-    p5+=`<br><br>整體方向：${actions.join('、')}，目標把日均單數維持在 ${goalOrders>0?Math.ceil(needOrders/Math.max(daysLeft,1)):'-'} 單以上。`;
+    if(zeroList.length>0||highBudgetLowROAS.length>0){
+      const badTypes=[...new Set([...zeroList.map(z=>z.type),...highBudgetLowROAS.map(h=>h.type)])];
+      actions.push(`把預算從${badTypes.join('、')}的低效廣告組抽出來`);
+    }
+    if(killAds.length>0) actions.push(`暫停 ROAS 低於 1.5x 的素材`);
+    if(bestAdsets.length>0) actions.push(`集中給${bestAdsets.slice(0,2).map(a=>{const n=a.name.length>12?a.name.slice(0,12)+'…':a.name;return '【'+n+'】';}).join('、')}等高效組合`);
+    const dailyTarget=goalOrders>0&&daysLeft>0?Math.ceil(needOrders/daysLeft):0;
+    p5+=`<br><br>整體方向就是${actions.join('，')}，${dailyTarget>0?`目標月底前把日均單數維持在 <strong>${dailyTarget}</strong> 單以上就能達標。`:'持續優化效率。'}`;
   }
 
   // ── 純文字版 ──
