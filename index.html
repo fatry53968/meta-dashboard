@@ -153,6 +153,10 @@ const CLIENTS = [
   { name:'如邑堂餅家',  accounts:['633783697353799','1568525027410316'],        cpa:{ good:500, ok:650  } }
 ];
 
+// ── 月目標（localStorage）──
+function saveGoal(ci,field,val){try{localStorage.setItem('goal_'+ci+'_'+field,val);}catch(e){}}
+function loadGoal(ci,field){try{return parseFloat(localStorage.getItem('goal_'+ci+'_'+field)||0);}catch(e){return 0;}}
+
 const FIELDS = 'spend,impressions,clicks,ctr,reach,frequency,actions,action_values,cost_per_action_type,video_p25_watched_actions,video_p50_watched_actions,video_p100_watched_actions,video_play_actions,outbound_clicks';
 const AD_FIELDS = 'ad_name,adset_name,campaign_name,spend,impressions,clicks,ctr,actions,action_values,cost_per_action_type,outbound_clicks';
 
@@ -285,19 +289,30 @@ async function fetchAdInsights(accountId, s, e) {
 }
 async function fetchClientData(ci) {
   const client=CLIENTS[ci]; const{today,yesterday}=getDateRange();
-  const res={today:[],yesterday:[],adsToday:[],adsYesterday:[]};
+  const now=new Date(); const m1=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
+  const res={today:[],yesterday:[],adsToday:[],adsYesterday:[],monthTotal:[],adsPrev:[]};
   for(const acc of client.accounts){
-    const[t,y,at,ay]=await Promise.all([
+    const[t,y,at,ay,mo,ap]=await Promise.all([
       fetchInsights(acc,today,today).catch(()=>null),
       fetchInsights(acc,yesterday,yesterday).catch(()=>null),
       fetchAdInsights(acc,today).catch(()=>[]),
+      fetchAdInsights(acc,yesterday).catch(()=>[]),
+      fetchInsights(acc,m1,today).catch(()=>null),
       fetchAdInsights(acc,yesterday).catch(()=>[])
     ]);
-    if(t)res.today.push(t); if(y)res.yesterday.push(y);
+    if(t)res.today.push(t); if(y)res.yesterday.push(y); if(mo)res.monthTotal.push(mo);
     res.adsToday=res.adsToday.concat(at||[]);
     res.adsYesterday=res.adsYesterday.concat(ay||[]);
+    res.adsPrev=res.adsPrev.concat(ap||[]);
   }
-  return{today:mergeInsights(res.today),yesterday:mergeInsights(res.yesterday),adsToday:res.adsToday,adsYesterday:res.adsYesterday};
+  const uniqAdsets=(ads)=>new Set(ads.filter(a=>parseFloat(a.spend||0)>0).map(a=>a.adset_name||'')).size;
+  return{
+    today:mergeInsights(res.today), yesterday:mergeInsights(res.yesterday),
+    adsToday:res.adsToday, adsYesterday:res.adsYesterday,
+    monthTotal:mergeInsights(res.monthTotal),
+    adsetCountToday:uniqAdsets(res.adsToday),
+    adsetCountYesterday:uniqAdsets(res.adsPrev)
+  };
 }
 
 // ── 格式 ──
@@ -364,7 +379,7 @@ function sumType(rawAds, type, ci){
 // ────────────────────────────────────────────────
 // ── 日報產生器 ──
 // ────────────────────────────────────────────────
-function buildDailyReport(ci, todayData, adsToday) {
+function buildDailyReport(ci, todayData, adsToday, extra={}) {
   const{today}=getDateRange(); const client=CLIENTS[ci]; const thr=client.cpa;
   const spend=parseFloat(todayData?.spend||0);
   if(!spend) return '<div class="report-loading">⏳ 昨天尚無花費數據</div>';
@@ -374,93 +389,155 @@ function buildDailyReport(ci, todayData, adsToday) {
   const ctr=parseFloat(todayData?.ctr||0);
   const convRate=todayData?.clicks>0?purchase/todayData.clicks*100:0;
 
+  // 月累計
+  const mo=extra.monthTotal||null;
+  const moPurchase=mo?gv(mo,'purchase'):0;
+  const moAcv=mo?gacv(mo,'purchase'):0;
+  const moSpend=mo?parseFloat(mo.spend||0):0;
+  const goalOrders=loadGoal(ci,'orders');
+  const goalRev=loadGoal(ci,'revenue');
+  const nowDate=new Date(); const daysInMonth=new Date(nowDate.getFullYear(),nowDate.getMonth()+1,0).getDate();
+  const dayOfMonth=nowDate.getDate()-1; // 昨天是幾號
+  const daysLeft=daysInMonth-dayOfMonth;
+  const needOrders=goalOrders>0?Math.max(0,goalOrders-moPurchase):0;
+  const achRate=goalOrders>0?(moPurchase/goalOrders*100):0;
+  const dailyAvg=dayOfMonth>0?moPurchase/dayOfMonth:0;
+
+  // 廣告組數
+  const adsetToday=extra.adsetCountToday||0;
+  const adsetYest=extra.adsetCountYesterday||0;
+  const adsetDiff=adsetToday-adsetYest;
+
   const typeOrder = ci===0
     ? ['流量/互動/觀看','ASC','KOL','興趣','類似','RT','其他']
     : ['流量/互動/觀看','ASC','KOL','台灣興趣','海外興趣','類似','台灣RT','海外RT','其他'];
-
-  // 受眾分析
   const typeData={};
   for(const t of typeOrder) typeData[t]=sumType(adsToday,t,ci);
 
-  const bestList=[], warnList=[], zeroList=[];
+  // 表現分類
+  const bestList=[], warnList=[], zeroList=[], highBudgetLowROAS=[];
+  const totalSpend=Object.values(typeData).reduce((s,d)=>s+d.spend,0)||1;
   for(const t of typeOrder){
     const d=typeData[t]; if(d.spend<100)continue;
-    if(d.purchase===0&&d.spend>=400) zeroList.push({type:t,spend:d.spend});
-    else if(d.cpa>0&&d.cpa<thr.good) bestList.push({type:t,...d});
-    else if(d.cpa>=thr.ok&&d.purchase>0) warnList.push({type:t,...d});
+    if(d.purchase===0&&d.spend>=400) zeroList.push({type:t,spend:d.spend,pct:(d.spend/totalSpend*100)});
+    else if(d.cpa>0&&d.cpa<thr.good) bestList.push({type:t,...d,pct:(d.spend/totalSpend*100)});
+    else if(d.cpa>=thr.ok&&d.purchase>0) warnList.push({type:t,...d,pct:(d.spend/totalSpend*100)});
+    if(d.spend/totalSpend>0.3&&d.roas>0&&d.roas<2) highBudgetLowROAS.push({type:t,...d,pct:(d.spend/totalSpend*100)});
   }
   bestList.sort((a,b)=>a.cpa-b.cpa);
+  warnList.sort((a,b)=>b.spend-a.spend);
 
-  // 素材排序：花費降序優先
-  const adList=mergeAdsByName(adsToday,ci)
-    .filter(ad=>adv(ad,'purchase')>0)
-    .sort((a,b)=>parseFloat(b.spend||0)-parseFloat(a.spend||0));
+  // 素材
+  const adList=mergeAdsByName(adsToday,ci).filter(ad=>adv(ad,'purchase')>0).sort((a,b)=>parseFloat(b.spend||0)-parseFloat(a.spend||0));
+  const badAds=mergeAdsByName(adsToday,ci).filter(ad=>adcpa(ad,'purchase')>=thr.ok&&adv(ad,'purchase')>0).sort((a,b)=>adcpa(b,'purchase')-adcpa(a,'purchase'));
 
   // ── 口述段落 ──
-  // P1: 整體
-  const cpaTag = cpa<thr.good?`<strong style="color:var(--green)">NT$${Math.round(cpa)}（優秀✅）</strong>`
-    :cpa<thr.ok?`<strong style="color:var(--amber)">NT$${Math.round(cpa)}（普通）</strong>`
-    :`<strong style="color:var(--red)">NT$${Math.round(cpa)}（偏高⚠️）</strong>`;
-  const roasTag = roas>=3?`<strong style="color:var(--green)">${roas.toFixed(2)}x（達標✅）</strong>`
-    :roas>=2?`<strong style="color:var(--amber)">${roas.toFixed(2)}x（普通）</strong>`
-    :`<strong style="color:var(--red)">${roas.toFixed(2)}x（偏低⚠️）</strong>`;
+  const cpaTag=cpa<thr.good?`<strong style="color:var(--green)">NT$${Math.round(cpa)}（優秀✅）</strong>`:cpa<thr.ok?`<strong style="color:var(--amber)">NT$${Math.round(cpa)}（普通）</strong>`:`<strong style="color:var(--red)">NT$${Math.round(cpa)}（偏高⚠️）</strong>`;
+  const roasTag=roas>=3?`<strong style="color:var(--green)">${roas.toFixed(2)}x（達標✅）</strong>`:roas>=2?`<strong style="color:var(--amber)">${roas.toFixed(2)}x（普通）</strong>`:`<strong style="color:var(--red)">${roas.toFixed(2)}x（偏低⚠️）</strong>`;
 
+  // P1 昨日整體
   let p1=`昨天（${today}）共跑了 <strong>${purchase}</strong> 單，廣告費 <strong>NT$${Math.round(spend).toLocaleString()}</strong>，CPA ${cpaTag}，ROAS ${roasTag}，轉換率 <strong>${convRate.toFixed(2)}%</strong>。`;
 
-  // P2: 受眾
+  // P2 月累計
   let p2='';
-  if(bestList.length>0){
-    const b=bestList[0];
-    p2+=`受眾最佳的是 <strong>${b.type}</strong>，CPA NT$${Math.round(b.cpa)}、購買 ${b.purchase} 筆、ROAS ${b.roas.toFixed(2)}x。`;
-    if(bestList.length>1){
-      p2+=`另外 ${bestList.slice(1).map(x=>`${x.type}（CPA NT$${Math.round(x.cpa)}）`).join('、')} 也表現不錯。`;
+  if(goalOrders>0||moPurchase>0){
+    const achStr=goalOrders>0?`達成率約 <strong>${achRate.toFixed(0)}%</strong>，`:'';
+    const moRevStr=goalRev>0?`、營業額 <strong>NT$${Math.round(moAcv).toLocaleString()}</strong>`:'';
+    p2=`月累計目前 <strong>${moPurchase}</strong> 單${moRevStr}，${achStr}`;
+    if(goalOrders>0&&daysLeft>0){
+      const onTrack=dailyAvg*daysLeft+moPurchase>=goalOrders*0.95;
+      p2+=`剩 ${daysLeft} 天還需要 <strong>${needOrders}</strong> 單，以目前日均約 ${dailyAvg.toFixed(0)} 單的速度<strong>${onTrack?'追得上✅':'有點吃力⚠️'}</strong>。`;
     }
   }
-  if(zeroList.length>0){
-    const names=zeroList.map(z=>`${z.type}（花費 NT$${Math.round(z.spend).toLocaleString()}）`).join('、');
-    p2+=`<br><br>⚠️ <strong>${names}</strong> 有花費但零購買，是拉高整體 CPA 的主因，建議今天進後台確認並暫停低效素材。`;
+
+  // P3 受眾分組
+  let p3='';
+  // 亮眼受眾
+  if(bestList.length>0){
+    const stars=bestList.slice(0,2).map(b=>`<strong>${b.type}</strong>（CPA NT$${Math.round(b.cpa)}、ROAS ${b.roas.toFixed(2)}x，佔比 ${b.pct.toFixed(0)}%）`).join('、');
+    p3+=`受眾表現最亮眼的是 ${stars}。`;
   }
-  if(warnList.length>0&&zeroList.length===0){
-    const w=warnList[0];
-    p2+=`<br><br>需注意 <strong>${w.type}</strong>，CPA 偏高（NT$${Math.round(w.cpa)}），建議檢查素材表現。`;
+  // 高預算低效
+  if(highBudgetLowROAS.length>0){
+    const h=highBudgetLowROAS[0];
+    p3+=`<br><br><strong>${h.type}</strong> 佔預算 ${h.pct.toFixed(0)}%，但 CPA NT$${Math.round(h.cpa)}、ROAS ${h.roas.toFixed(2)}x，是整體 CPA 偏高的主因，建議進後台確認素材組成。`;
+  }
+  // 零購買
+  if(zeroList.length>0){
+    const zTotal=zeroList.reduce((s,z)=>s+z.spend,0);
+    const names=zeroList.map(z=>`${z.type}（NT$${Math.round(z.spend).toLocaleString()}）`).join('、');
+    p3+=`<br><br>⚠️ ${names} 有花費但零購買，合計燒掉 NT$${Math.round(zTotal).toLocaleString()}，建議今天直接暫停，預算集中給表現好的組合。`;
   }
 
-  // P3: 素材
-  let p3='';
+  // P4 素材
+  let p4='';
   if(adList.length>0){
-    const top=adList.slice(0,3);
-    p3+='昨天 CPA 最漂亮的素材：<br>';
-    top.forEach((ad,i)=>{
-      const c=adcpa(ad,'purchase'),r=parseFloat(ad.spend||0)>0?adacv(ad,'purchase')/parseFloat(ad.spend||0):0;
-      const n=(ad.ad_name||'').length>28?(ad.ad_name||'').slice(0,28)+'…':(ad.ad_name||'');
-      p3+=`${i+1}. 【${n}】CPA NT$${Math.round(c)}、購買 ${adv(ad,'purchase')} 筆、ROAS ${r.toFixed(2)}x<br>`;
-    });
-    const badAds=mergeAdsByName(adsToday,ci)
-      .filter(ad=>adcpa(ad,'purchase')>=thr.ok&&adv(ad,'purchase')>0)
-      .sort((a,b)=>adcpa(b,'purchase')-adcpa(a,'purchase'));
+    const topAd=adList[0];
+    const tc=adcpa(topAd,'purchase'),tr=parseFloat(topAd.spend||0)>0?adacv(topAd,'purchase')/parseFloat(topAd.spend||0):0;
+    const tn=(topAd.ad_name||'').length>25?(topAd.ad_name||'').slice(0,25)+'…':(topAd.ad_name||'');
+    p4+=`花費最高素材是【${tn}】，CPA NT$${Math.round(tc)}、購買 ${adv(topAd,'purchase')} 筆、ROAS ${tr.toFixed(2)}x。`;
+    if(adList.length>1){
+      const others=adList.slice(1,3).map(ad=>{
+        const c=adcpa(ad,'purchase'),r=parseFloat(ad.spend||0)>0?adacv(ad,'purchase')/parseFloat(ad.spend||0):0;
+        const n=(ad.ad_name||'').length>20?(ad.ad_name||'').slice(0,20)+'…':(ad.ad_name||'');
+        return `【${n}】CPA NT$${Math.round(c)}、ROAS ${r.toFixed(2)}x`;
+      }).join('、');
+      p4+=`其次是 ${others}。`;
+    }
     if(badAds.length>0){
       const bad=badAds[0];
-      const bn=(bad.ad_name||'').length>28?(bad.ad_name||'').slice(0,28)+'…':(bad.ad_name||'');
-      p3+=`<br>表現最差：【${bn}】CPA NT$${Math.round(adcpa(bad,'purchase'))}，建議調整或暫停。`;
+      const bn=(bad.ad_name||'').length>25?(bad.ad_name||'').slice(0,25)+'…':(bad.ad_name||'');
+      p4+=`<br><br>表現最差：【${bn}】CPA NT$${Math.round(adcpa(bad,'purchase'))}，ROAS ${(parseFloat(bad.spend||0)>0?adacv(bad,'purchase')/parseFloat(bad.spend||0):0).toFixed(2)}x，建議調整或暫停。`;
     }
-  } else { p3='昨天尚無足夠購買數據進行素材排名。'; }
+  }
 
-  // ── 純文字版（供複製）──
-  const plain=[
+  // P5 廣告組數 + 整體方向
+  let p5='';
+  if(adsetToday>0||adsetYest>0){
+    const diffStr=adsetDiff>0?`新增 ${adsetDiff} 組，`:adsetDiff<0?`減少 ${Math.abs(adsetDiff)} 組，`:'組數不變，';
+    p5+=`廣告組數從前天 <strong>${adsetYest}</strong> 組變為昨天 <strong>${adsetToday}</strong> 組，${diffStr}目前持續監控中。`;
+  }
+  // 整體方向
+  const hasIssue=zeroList.length>0||highBudgetLowROAS.length>0||badAds.length>0;
+  if(hasIssue){
+    const actions=[];
+    if(zeroList.length>0) actions.push(`暫停零購買的 ${zeroList.map(z=>z.type).join('、')}`);
+    if(badAds.length>0){const bn=(badAds[0].ad_name||'').slice(0,15);actions.push(`縮減或暫停【${bn}…】等高 CPA 素材`);}
+    if(bestList.length>0) actions.push(`把預算集中給 ${bestList.slice(0,2).map(b=>b.type).join('、')}`);
+    p5+=`<br><br>整體方向：${actions.join('、')}，目標把日均單數維持在 ${goalOrders>0?Math.ceil(needOrders/Math.max(daysLeft,1)):'-'} 單以上。`;
+  }
+
+  // ── 純文字版 ──
+  const plainLines=[
     `【${client.name} 廣告日報 ${today}】`,
     '',
     `昨天共跑了 ${purchase} 單，廣告費 NT$${Math.round(spend).toLocaleString()}，CPA NT$${Math.round(cpa)}（${cpa<thr.good?'優秀':cpa<thr.ok?'普通':'偏高'}），ROAS ${roas.toFixed(2)}x，轉換率 ${convRate.toFixed(2)}%。`,
-    '',
-    bestList.length>0?`受眾最佳的是 ${bestList[0].type}，CPA NT$${Math.round(bestList[0].cpa)}、購買 ${bestList[0].purchase} 筆、ROAS ${bestList[0].roas.toFixed(2)}x。`:null,
-    zeroList.length>0?`⚠️ ${zeroList.map(z=>z.type+'（花費 NT$'+Math.round(z.spend)+'）').join('、')} 有花費但零購買，是拉高整體 CPA 的主因，建議今天暫停低效素材。`:null,
-    '',
-    adList.length>0?'昨天 CPA 最漂亮的素材：':null,
-    ...adList.slice(0,3).map((ad,i)=>{
-      const c=adcpa(ad,'purchase'),r=parseFloat(ad.spend||0)>0?adacv(ad,'purchase')/parseFloat(ad.spend||0):0;
-      const n=(ad.ad_name||'').slice(0,30);
-      return `${i+1}. 【${n}】CPA NT$${Math.round(c)}、購買 ${adv(ad,'purchase')} 筆、ROAS ${r.toFixed(2)}x`;
-    })
-  ].filter(x=>x!==null).join('\n').trim();
+  ];
+  if(p2) plainLines.push('',p2.replace(/<[^>]+>/g,''));
+  if(p3) plainLines.push('',p3.replace(/<[^>]+>/g,'').replace(/\n/g,' '));
+  if(p4) plainLines.push('',p4.replace(/<[^>]+>/g,'').replace(/\n/g,' '));
+  if(p5) plainLines.push('',p5.replace(/<[^>]+>/g,'').replace(/\n/g,' '));
+  const plain=plainLines.join('\n').trim();
+
+  // ── 月目標輸入框 ──
+  const goalOrdersVal=loadGoal(ci,'orders')||'';
+  const goalRevVal=loadGoal(ci,'revenue')||'';
+  const goalHtml=`
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:8px">
+      <div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px">月目標訂單數</div>
+        <input id="goal-orders-${ci}" type="number" value="${goalOrdersVal}" placeholder="例：800"
+          style="width:110px;padding:6px 10px;border:1px solid var(--border2);border-radius:6px;font-size:13px;background:var(--surface)"
+          onchange="saveGoal(${ci},'orders',this.value);refreshReport(${ci})">
+      </div>
+      <div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px">月目標營業額</div>
+        <input id="goal-revenue-${ci}" type="number" value="${goalRevVal}" placeholder="例：1600000"
+          style="width:130px;padding:6px 10px;border:1px solid var(--border2);border-radius:6px;font-size:13px;background:var(--surface)"
+          onchange="saveGoal(${ci},'revenue',this.value);refreshReport(${ci})">
+      </div>
+      <div style="font-size:11px;color:var(--text3);padding-bottom:4px">↩ 輸入後按 Enter 自動更新</div>
+    </div>`;
 
   return `
     <div class="report-section">
@@ -472,13 +549,28 @@ function buildDailyReport(ci, todayData, adsToday) {
         <div class="kpi-chip"><div class="kpi-chip-label">ROAS</div><div class="kpi-chip-value" style="color:${rc(roas)}">${roas.toFixed(2)}x</div></div>
         <div class="kpi-chip"><div class="kpi-chip-label">轉換率</div><div class="kpi-chip-value">${convRate.toFixed(2)}%</div></div>
         <div class="kpi-chip"><div class="kpi-chip-label">CTR</div><div class="kpi-chip-value">${ctr.toFixed(2)}%</div></div>
+        ${moPurchase>0?`<div class="kpi-chip"><div class="kpi-chip-label">月累計單數</div><div class="kpi-chip-value">${moPurchase}</div></div>`:''}
+        ${moAcv>0?`<div class="kpi-chip"><div class="kpi-chip-label">月累計營業額</div><div class="kpi-chip-value" style="font-size:13px">NT$${Math.round(moAcv).toLocaleString()}</div></div>`:''}
+        ${goalOrders>0?`<div class="kpi-chip"><div class="kpi-chip-label">月達成率</div><div class="kpi-chip-value" style="color:${achRate>=80?'var(--green)':achRate>=60?'var(--amber)':'var(--red)'}">${achRate.toFixed(0)}%</div></div>`:''}
+        ${adsetToday>0?`<div class="kpi-chip"><div class="kpi-chip-label">廣告組數</div><div class="kpi-chip-value">${adsetYest}<span style="font-size:12px;color:${adsetDiff>0?'var(--green)':adsetDiff<0?'var(--red)':'var(--text3)'}"> → ${adsetToday}</span></div></div>`:''}
       </div>
     </div>
     <div class="report-section">
+      <div class="report-section-title">🎯 月目標設定</div>
+      ${goalHtml}
+    </div>
+    <div class="report-section">
       <div class="report-section-title">🗣️ 口述報告（可直接說給老闆聽）</div>
-      <div class="report-text">${[p1, p2?'<br><br>'+p2:'', p3?'<br><br>'+p3:''].join('')}</div>
+      <div class="report-text" id="report-html-${ci}">${[p1, p2?'<br><br>'+p2:'', p3?'<br><br>'+p3:'', p4?'<br><br>'+p4:'', p5?'<br><br>'+p5:''].join('')}</div>
     </div>
     <textarea id="report-plain-${ci}" style="position:absolute;left:-9999px;top:-9999px">${plain}</textarea>`;
+}
+
+// ── 月目標更新後重新產生日報 ──
+const _reportCache={};
+function refreshReport(ci){
+  const c=_reportCache[ci]; if(!c)return;
+  document.getElementById('daily-report-'+ci).innerHTML=buildDailyReport(ci,c.todayData,c.adsToday,c.extra);
 }
 
 function copyReport(ci){
@@ -596,10 +688,6 @@ function renderFlatTable(ci, rawAds, period){
     const dispName=(ad.ad_name||'').length>38?(ad.ad_name||'').slice(0,38)+'…':(ad.ad_name||'未命名');
     rows+=`<tr>
       <td style="padding:8px 12px">
-        <div style="display:flex;align-items:center;gap:5px;margin-bottom:3px">
-          <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0"></span>
-          <span style="font-size:10px;color:${color};font-weight:500">${ad._type}</span>
-        </div>
         <div class="ad-name" title="${(ad.ad_name||'').replace(/</g,'&lt;')}">${dispName}</div>
       </td>
       <td style="padding:8px 12px;text-align:right">NT$${Math.round(spend).toLocaleString()}<br><div class="spend-bar-wrap"><div class="spend-bar" style="width:${barW}px"></div></div></td>
@@ -695,7 +783,7 @@ function buildTopKPIs(t,y){
 }
 
 // ── 渲染 ──
-function renderClient(ci, todayData, yesterdayData, adsToday, adsYesterday){
+function renderClient(ci, todayData, yesterdayData, adsToday, adsYesterday, extra={}){
   const content=document.getElementById('content-'+ci);
   const{today,yesterday}=getDateRange();
   content.innerHTML=`
@@ -728,7 +816,8 @@ function renderClient(ci, todayData, yesterdayData, adsToday, adsYesterday){
     </div>
     <div id="creative-${ci}"><div class="period-loading">載入中...</div></div>`;
 
-  if(todayData) document.getElementById('daily-report-'+ci).innerHTML=buildDailyReport(ci,todayData,adsToday);
+  _reportCache[ci]={todayData,adsToday,extra};
+  if(todayData) document.getElementById('daily-report-'+ci).innerHTML=buildDailyReport(ci,todayData,adsToday,extra);
   document.getElementById('creative-summary-'+ci).innerHTML=buildCreativeSummary(ci,adsToday,adsYesterday);
   _periodCache[ci+'_1d']=adsToday;
   renderFlatTable(ci,adsToday,'1d');
@@ -742,7 +831,7 @@ async function loadClient(ci){
   try{
     const data=await fetchClientData(ci);
     dot.className='status-dot ok'; txt.textContent='資料已更新';
-    renderClient(ci,data.today,data.yesterday,data.adsToday||[],data.adsYesterday||[]);
+    renderClient(ci,data.today,data.yesterday,data.adsToday||[],data.adsYesterday||[],{monthTotal:data.monthTotal,adsetCountToday:data.adsetCountToday,adsetCountYesterday:data.adsetCountYesterday});
   }catch(e){
     dot.className='status-dot error'; txt.textContent='資料載入失敗';
     errEl.innerHTML=`<div class="error-msg">⚠️ 無法取得資料：${e.message}</div>`;
