@@ -929,15 +929,7 @@ function renderFlatTable(ci, rawAds) {
   if (filterKol === 'kol')     classifiedAds = classifiedAds.filter(ad => isKolType(ad._type, ad.ad_name));
   if (filterKol === 'non-kol') classifiedAds = classifiedAds.filter(ad => !isKolType(ad._type, ad.ad_name));
 
-  // 3. KOL 彙總數字（只在 kol / all 模式下顯示）
-  const kolAds = mergeAdsByName(rawAds, ci)
-    .map(ad => ({...ad, _type: classType(ad._campaign||ad.campaign_name, ci)}))
-    .filter(ad => ad._type !== '__SKIP__' && isKolType(ad._type, ad.ad_name));
-  const kolSpend   = kolAds.reduce((s,a) => s+parseFloat(a.spend||0), 0);
-  const kolPurchase= kolAds.reduce((s,a) => s+adv(a,'purchase'), 0);
-  const kolAcv     = kolAds.reduce((s,a) => s+adacv(a,'purchase'), 0);
-  const kolCpa     = kolPurchase>0 ? kolSpend/kolPurchase : 0;
-  const kolRoas    = kolSpend>0 ? kolAcv/kolSpend : 0;
+  // (KOL 彙總卡已移除)
 
   // 4. 排序
   const sortFn = (a, b) => {
@@ -964,16 +956,7 @@ function renderFlatTable(ci, rawAds) {
   // 篩選標籤文字
   const filterLabel = filterKol==='kol' ? '🌟 KOL 素材' : filterKol==='non-kol' ? '非 KOL 素材' : '全部素材';
 
-  // KOL 彙總卡（filterKol=all 或 kol 時顯示）
-  const kolSummaryHtml = (filterKol !== 'non-kol' && kolAds.length > 0) ? `
-    <div class="kol-summary visible">
-      <span class="kol-summary-title">🌟 KOL 彙總</span>
-      <span class="kol-stat">花費 <b>NT$${Math.round(kolSpend).toLocaleString()}</b></span>
-      <span class="kol-stat">購買 <b>${kolPurchase}</b> 筆</span>
-      <span class="kol-stat">CPA <b style="color:${cpaCl(kolCpa,ci)}">${kolCpa>0?'NT$'+Math.round(kolCpa):'-'}</b></span>
-      <span class="kol-stat">ROAS <b style="color:${rc(kolRoas)}">${kolRoas>0?kolRoas.toFixed(2)+'x':'-'}</b></span>
-      <span class="kol-stat" style="color:#7b1fa2;font-size:11px">共 ${kolAds.length} 組素材</span>
-    </div>` : '';
+  // KOL 彙總卡已移除
 
   // 欄位排序狀態 class helper
   const thCls = (field) => `sortable-th${s.sortBy===field?' sort-active':''}`;
@@ -1014,7 +997,6 @@ function renderFlatTable(ci, rawAds) {
   }
 
   el.innerHTML = `
-    ${kolSummaryHtml}
     <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
       統計區間：${periodLabel}｜${filterLabel} 共 <b>${classifiedAds.length}</b> 組｜CPA 顏色：綠=優秀 橘=普通 紅=差
     </div>
@@ -1022,7 +1004,7 @@ function renderFlatTable(ci, rawAds) {
       <table class="creative-table">
         <thead><tr>
           <th>廣告名稱</th>
-          <th style="text-align:right">花費</th>
+          <th style="text-align:right" class="${thCls('spend')}" onclick="setSort(${ci},'spend')">花費 ${sortIcon(ci,'spend')}</th>
           <th style="text-align:right">CTR(連結)</th>
           <th style="text-align:right">加購</th>
           <th style="text-align:right" class="${thCls('purchase')}" onclick="setSort(${ci},'purchase')">
