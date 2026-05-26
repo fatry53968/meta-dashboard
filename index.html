@@ -346,7 +346,12 @@ function classType(camp, ci) {
   }
 }
 
-function isKolType(type) { return type === 'KOL'; }
+// KOL 判斷：campaign type 是 KOL，或廣告名稱本身含有 KOL
+function isKolType(type, adName) {
+  if (type === 'KOL') return true;
+  if (adName && adName.toUpperCase().includes('KOL')) return true;
+  return false;
+}
 
 function recommendAd(ad, ci) {
   const spend=parseFloat(ad.spend||0), cpa=adcpa(ad,'purchase'), roas=spend>0?adacv(ad,'purchase')/spend:0;
@@ -921,13 +926,13 @@ function renderFlatTable(ci, rawAds) {
     .filter(ad => ad._type !== '__SKIP__');
 
   // 2. KOL 篩選
-  if (filterKol === 'kol')     classifiedAds = classifiedAds.filter(ad => isKolType(ad._type));
-  if (filterKol === 'non-kol') classifiedAds = classifiedAds.filter(ad => !isKolType(ad._type));
+  if (filterKol === 'kol')     classifiedAds = classifiedAds.filter(ad => isKolType(ad._type, ad.ad_name));
+  if (filterKol === 'non-kol') classifiedAds = classifiedAds.filter(ad => !isKolType(ad._type, ad.ad_name));
 
   // 3. KOL 彙總數字（只在 kol / all 模式下顯示）
   const kolAds = mergeAdsByName(rawAds, ci)
     .map(ad => ({...ad, _type: classType(ad._campaign||ad.campaign_name, ci)}))
-    .filter(ad => ad._type !== '__SKIP__' && isKolType(ad._type));
+    .filter(ad => ad._type !== '__SKIP__' && isKolType(ad._type, ad.ad_name));
   const kolSpend   = kolAds.reduce((s,a) => s+parseFloat(a.spend||0), 0);
   const kolPurchase= kolAds.reduce((s,a) => s+adv(a,'purchase'), 0);
   const kolAcv     = kolAds.reduce((s,a) => s+adacv(a,'purchase'), 0);
@@ -975,7 +980,7 @@ function renderFlatTable(ci, rawAds) {
 
   let rows = '';
   for (const ad of classifiedAds) {
-    const isKol = isKolType(ad._type);
+    const isKol = isKolType(ad._type, ad.ad_name);
     const spend = parseFloat(ad.spend||0);
     const impressions = parseFloat(ad.impressions||0);
     const outboundClicks = adob(ad);
