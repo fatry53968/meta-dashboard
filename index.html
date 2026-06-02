@@ -622,8 +622,10 @@ async function generateAIReport(ci, todayData, adsToday, extra) {
     });
 
     if (!response.ok) {
-      const errData = await response.json().catch(() => ({}));
-      throw new Error(errData.error || `HTTP ${response.status}`);
+      const errText = await response.text().catch(() => '');
+      let errMsg = `HTTP ${response.status}`;
+      try { const j = JSON.parse(errText); errMsg = j.error?.message || (typeof j.error === 'string' ? j.error : errMsg); } catch(e) { if(errText) errMsg = errText.slice(0,200); }
+      throw new Error(errMsg);
     }
 
     const reader = response.body.getReader();
@@ -656,7 +658,9 @@ async function generateAIReport(ci, todayData, adsToday, extra) {
             }
             el.textContent = fullText;
           }
-        } catch (e) { /* skip bad lines */ }
+        } catch (e) {
+          if (e.message && (e.message.startsWith('HTTP') || e.message.includes('API_KEY') || e.message.includes('quota'))) throw e;
+        }
       }
     }
 
