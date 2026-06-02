@@ -648,8 +648,9 @@ async function generateAIReport(ci, todayData, adsToday, extra) {
         if (!data || data === '[DONE]') continue;
         try {
           const parsed = JSON.parse(data);
-          // Gemini SSE 格式：candidates[0].content.parts[0].text
-          const chunk = parsed.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          if (parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error));
+          // Groq/OpenAI SSE 格式
+          const chunk = parsed.choices?.[0]?.delta?.content || '';
           if (chunk) {
             fullText += chunk;
             if (!started) {
