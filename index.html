@@ -536,15 +536,35 @@ function buildAIPrompt(ci, todayData, adsToday, extra) {
     .sort((a, b) => b.spend - a.spend)
     .slice(0, 6);
 
-  // 組成 prompt 的資料字串
+  // 組成 prompt 的資料字串 — 更詳細的廣告組明細
   const typeSummary = Object.entries(typeStats).map(([t, s]) => {
-    const zeroBadAds = (adsetByType[t] || []).filter(a => a.purchase === 0 && a.spend >= 200);
-    const goodAds = (adsetByType[t] || []).filter(a => a.purchase > 0 && a.cpa > 0 && a.cpa < thr.ok).sort((a,b)=>a.cpa-b.cpa).slice(0,3);
-    const zeroBadNames = zeroBadAds.slice(0,8).map(a => a.name).join('、');
-    const goodNames = goodAds.map(a => `${a.name}（花費NT$${Math.round(a.spend)}，${a.purchase}單，CPA NT$${Math.round(a.cpa)}）`).join('；');
-    return `【${t}】花費NT$${Math.round(s.spend)}，購買${s.purchase}單，CPA${s.cpa>0?'NT$'+Math.round(s.cpa):'無'}，ROAS${s.roas>0?s.roas.toFixed(2)+'x':'無'}` +
-      (zeroBadNames ? `\n  → 零購買廣告組（花費≥NT$200）：${zeroBadNames}` : '') +
-      (goodNames ? `\n  → 表現優秀廣告組：${goodNames}` : '');
+    const allAds = (adsetByType[t] || []).sort((a,b) => b.spend - a.spend);
+    const topSpendAd = allAds[0];
+    const topPurchaseAd = [...allAds].sort((a,b) => b.purchase - a.purchase)[0];
+    const zeroBadAds = allAds.filter(a => a.purchase === 0 && a.spend >= 200);
+    const hasOrderAds = allAds.filter(a => a.purchase > 0).sort((a,b) => b.purchase - a.purchase);
+
+    let detail = `【${t}】總花費NT$${Math.round(s.spend)}，購買${s.purchase}單，整體CPA${s.cpa>0?'NT$'+Math.round(s.cpa):'無'}，ROAS${s.roas>0?s.roas.toFixed(2)+'x':'無'}`;
+
+    // 花費最多的組
+    if (topSpendAd) {
+      detail += `\n  → 花費最多：${topSpendAd.name}（NT$${Math.round(topSpendAd.spend)}，${topSpendAd.purchase}單${topSpendAd.cpa>0?'，CPA NT$'+Math.round(topSpendAd.cpa):'，零購買'}）`;
+    }
+    // 帶單最多的組（若不同於花費最多）
+    if (topPurchaseAd && topPurchaseAd.purchase > 0 && topPurchaseAd.name !== topSpendAd?.name) {
+      detail += `\n  → 帶單最多：${topPurchaseAd.name}（花費NT$${Math.round(topPurchaseAd.spend)}，${topPurchaseAd.purchase}單，CPA NT$${Math.round(topPurchaseAd.cpa)}）`;
+    }
+    // 所有有轉單的廣告組（前5個）
+    if (hasOrderAds.length > 0) {
+      const orderStr = hasOrderAds.slice(0,5).map(a => `${a.name}（NT$${Math.round(a.spend)}，${a.purchase}單，CPA NT$${Math.round(a.cpa)}）`).join('；');
+      detail += `\n  → 有轉單廣告組：${orderStr}`;
+    }
+    // 零購買但有花費
+    if (zeroBadAds.length > 0) {
+      const zeroStr = zeroBadAds.slice(0,8).map(a => `${a.name}（NT$${Math.round(a.spend)}）`).join('、');
+      detail += `\n  → 零購買廣告組（${zeroBadAds.length}組，合計NT$${Math.round(zeroBadAds.reduce((s,a)=>s+a.spend,0))}）：${zeroStr}`;
+    }
+    return detail;
   }).join('\n');
 
   const top14Str = top14.length > 0
@@ -583,13 +603,13 @@ ${top14Str}
 ---
 
 ## 口述稿寫作要求
-1. **語氣自然**：像在跟老闆面對面講話，用「昨天」「這組」「這支」等口語詞
-2. **解釋原因**：不只報數字，要說「為什麼」CPA高或低，例如「主要是裡面有幾組零購買拉高了整體」
-3. **結構清晰但不條列**：先說整體→月目標進度→各類型分析→素材亮點→行動建議，用段落分隔
-4. **有判斷力**：區分哪些是「樣本不足還在測試」、哪些是「已確定要暫停」、哪些是「要加預算」
-5. **長度適中**：大約 300-500 字，不要過長
-6. **不要重複數字**：同一個數字不要說兩次
-7. **直接給口述稿內容**，不要說「以下是口述稿：」這類前言，也不要 markdown 格式
+1. **語氣自然**：像在跟老闆面對面講話，用「昨天」「這組」「這支」等口語詞，不要說「這些數據表明」「根據分析」等書面語
+2. **每個類型都要點出具體數字**：說某個類型時，要提「花費最多的是哪組、花了多少、轉了幾單、CPA多少」或「帶單最多的是哪組、花費、CPA」
+3. **解釋原因**：CPA偏高要說是哪幾組零購買拉高的，並點出這些組的名稱和花費；CPA好要說是哪組帶動的
+4. **判斷力**：花費少（NT$1500以下）的類型說「樣本不夠，繼續觀察」；零購買花費多的直接說建議暫停；表現好的說建議加預算
+5. **結構**：整體概況 → 月目標進度 → 各類型逐一分析（每個類型一小段）→ 近14天素材亮點 → 今天行動建議
+6. **長度**：400-600字，每個類型都要說到
+7. **直接給口述稿內容**，不要說「以下是口述稿：」，不要用 markdown 格式，不要用 ** 粗體
 
 請開始寫：`;
 
