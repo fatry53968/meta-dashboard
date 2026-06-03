@@ -211,7 +211,9 @@ function saveGoal(ci,field,val){try{localStorage.setItem('goal_'+ci+'_'+field,va
 function loadGoal(ci,field){try{return parseFloat(localStorage.getItem('goal_'+ci+'_'+field)||0);}catch(e){return 0;}}
 
 const FIELDS = 'spend,impressions,clicks,ctr,reach,frequency,actions,action_values,cost_per_action_type,video_p25_watched_actions,video_p50_watched_actions,video_p100_watched_actions,video_play_actions,outbound_clicks';
-const AD_FIELDS = 'ad_name,adset_name,campaign_name,spend,impressions,clicks,ctr,actions,action_values,cost_per_action_type,outbound_clicks';
+
+// ── CHANGE 1: 加入影片欄位 ──
+const AD_FIELDS = 'ad_name,adset_name,campaign_name,spend,impressions,clicks,ctr,actions,action_values,cost_per_action_type,outbound_clicks,video_play_actions,video_p25_watched_actions,video_p95_watched_actions';
 
 function getDateRange() {
   const now = new Date();
@@ -401,6 +403,7 @@ const fX=(n)=>n>0?n.toFixed(2)+'x':'-';
 const fP=(n)=>n>0?n.toFixed(1)+'%':'-';
 const cpaCl=(cpa,ci)=>{ const t=CLIENTS[ci].cpa; return cpa<=0?'var(--text3)':cpa<t.good?'var(--green)':cpa<t.ok?'var(--amber)':'var(--red)'; };
 
+// ── CHANGE 2: mergeAdsByName 加入影片欄位合併 ──
 function mergeAdsByName(rawAds, ci) {
   const map={};
   for(const ad of rawAds){
@@ -421,6 +424,9 @@ function mergeAdsByName(rawAds, ci) {
         for(const item of ad[f]){const ex=base[f].find(x=>x.action_type===item.action_type);if(ex)ex.value=String(parseFloat(ex.value||0)+parseFloat(item.value||0));else base[f].push(JSON.parse(JSON.stringify(item)));}
       };
       mArr('actions');mArr('action_values');mArr('outbound_clicks');
+      mArr('video_play_actions');
+      mArr('video_p25_watched_actions');
+      mArr('video_p95_watched_actions');
       const imp=parseInt(base.impressions||0),clk=parseInt(base.clicks||0);
       base.ctr=imp>0?String((clk/imp*100).toFixed(4)):'0';
       const sp=parseFloat(base.spend||0); base.cost_per_action_type=[];
@@ -444,13 +450,11 @@ function sumType(rawAds, type, ci){
    AI 口述稿生成（Claude API Streaming）
 ══════════════════════════════════════════════ */
 
-// 把廣告數據整理成給 AI 的結構化 prompt
 function buildAIPrompt(ci, todayData, adsToday, extra) {
   const client = CLIENTS[ci];
   const thr = client.cpa;
   const { today } = getDateRange();
 
-  // 整體數據
   const spend = parseFloat(todayData?.spend || 0);
   const purchase = gv(todayData, 'purchase');
   const cpa = gcpa(todayData, 'purchase');
@@ -460,7 +464,6 @@ function buildAIPrompt(ci, todayData, adsToday, extra) {
   const clicks = parseFloat(todayData?.clicks || 0);
   const convRate = clicks > 0 ? purchase / clicks * 100 : 0;
 
-  // 月累計
   const mo = extra.monthTotal || null;
   const moPurchase = mo ? Math.round(gv(mo, 'purchase')) : 0;
   const moAcv = mo ? gacv(mo, 'purchase') : 0;
@@ -473,7 +476,6 @@ function buildAIPrompt(ci, todayData, adsToday, extra) {
   const achRate = goalOrders > 0 ? (moPurchase / goalOrders * 100) : 0;
   const dailyAvg = dayOfMonth > 0 ? moPurchase / dayOfMonth : 0;
 
-  // 各類型分組
   const typeOrder = ci === 0
     ? ['流量/互動/觀看', 'ASC', 'KOL', '興趣', '類似', 'RT', '其他']
     : ['流量/互動/觀看', 'ASC', 'KOL', '台灣興趣', '海外興趣', '類似', '台灣RT', '海外RT', '其他'];
@@ -484,7 +486,6 @@ function buildAIPrompt(ci, todayData, adsToday, extra) {
     if (s.spend > 0) typeStats[t] = s;
   }
 
-  // 各類型細節廣告組（有花費的）
   const adsetByType = {};
   for (const ad of adsToday) {
     if (parseFloat(ad.spend || 0) <= 0) continue;
@@ -501,7 +502,6 @@ function buildAIPrompt(ci, todayData, adsToday, extra) {
     });
   }
 
-  // 近14天頂尖素材
   const ads14d = extra.ads14d || [];
   const map14 = {};
   for (const ad of ads14d) {
@@ -536,7 +536,6 @@ function buildAIPrompt(ci, todayData, adsToday, extra) {
     .sort((a, b) => b.spend - a.spend)
     .slice(0, 6);
 
-  // 組成 prompt 的資料字串 — 更詳細的廣告組明細
   const typeSummary = Object.entries(typeStats).map(([t, s]) => {
     const allAds = (adsetByType[t] || []).sort((a,b) => b.spend - a.spend);
     const topSpendAd = allAds[0];
@@ -546,20 +545,16 @@ function buildAIPrompt(ci, todayData, adsToday, extra) {
 
     let detail = `【${t}】總花費NT$${Math.round(s.spend)}，購買${s.purchase}單，整體CPA${s.cpa>0?'NT$'+Math.round(s.cpa):'無'}，ROAS${s.roas>0?s.roas.toFixed(2)+'x':'無'}`;
 
-    // 花費最多的組
     if (topSpendAd) {
       detail += `\n  → 花費最多：${topSpendAd.name}（NT$${Math.round(topSpendAd.spend)}，${topSpendAd.purchase}單${topSpendAd.cpa>0?'，CPA NT$'+Math.round(topSpendAd.cpa):'，零購買'}）`;
     }
-    // 帶單最多的組（若不同於花費最多）
     if (topPurchaseAd && topPurchaseAd.purchase > 0 && topPurchaseAd.name !== topSpendAd?.name) {
       detail += `\n  → 帶單最多：${topPurchaseAd.name}（花費NT$${Math.round(topPurchaseAd.spend)}，${topPurchaseAd.purchase}單，CPA NT$${Math.round(topPurchaseAd.cpa)}）`;
     }
-    // 所有有轉單的廣告組（前5個）
     if (hasOrderAds.length > 0) {
       const orderStr = hasOrderAds.slice(0,5).map(a => `${a.name}（NT$${Math.round(a.spend)}，${a.purchase}單，CPA NT$${Math.round(a.cpa)}）`).join('；');
       detail += `\n  → 有轉單廣告組：${orderStr}`;
     }
-    // 零購買但有花費
     if (zeroBadAds.length > 0) {
       const zeroStr = zeroBadAds.slice(0,8).map(a => `${a.name}（NT$${Math.round(a.spend)}）`).join('、');
       detail += `\n  → 零購買廣告組（${zeroBadAds.length}組，合計NT$${Math.round(zeroBadAds.reduce((s,a)=>s+a.spend,0))}）：${zeroStr}`;
@@ -616,7 +611,6 @@ ${top14Str}
   return prompt;
 }
 
-// Streaming 呼叫 Gemini API（透過 Cloudflare Worker proxy）
 const PROXY_URL = 'https://anthropic-proxy.fatry53968.workers.dev';
 
 async function generateAIReport(ci, todayData, adsToday, extra) {
@@ -669,7 +663,6 @@ async function generateAIReport(ci, todayData, adsToday, extra) {
         try {
           const parsed = JSON.parse(data);
           if (parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error));
-          // Groq/OpenAI SSE 格式
           const chunk = parsed.choices?.[0]?.delta?.content || '';
           if (chunk) {
             fullText += chunk;
@@ -705,10 +698,8 @@ const _aiReportCache = {};
 function regenAIReport(ci) {
   const c = _reportCache[ci];
   if (!c) return;
-  // 清除舊的重新生成按鈕
   const wrap = document.getElementById(`ai-report-wrap-${ci}`);
   if (wrap) {
-    // 移除可能存在的 regen 按鈕
     wrap.querySelectorAll('.ai-regen-btn').forEach(b => b.parentElement?.remove());
   }
   generateAIReport(ci, c.todayData, c.adsToday, c.extra);
@@ -727,9 +718,6 @@ function copyReport(ci) {
   if (btn) { btn.textContent = '✓ 已複製'; btn.classList.add('copied'); setTimeout(() => { btn.textContent = '📋 複製口述稿'; btn.classList.remove('copied'); }, 2000); }
 }
 
-/* ══════════════════════════════════════════════
-   日報 HTML 框架（KPI 卡片 + 月目標 + AI 口述區塊）
-══════════════════════════════════════════════ */
 function buildDailyReport(ci, todayData, adsToday, extra = {}) {
   const { today } = getDateRange();
   const client = CLIENTS[ci];
@@ -756,7 +744,6 @@ function buildDailyReport(ci, todayData, adsToday, extra = {}) {
   const needOrders = goalOrders > 0 ? Math.max(0, goalOrders - moPurchase) : 0;
   const achRate = goalOrders > 0 ? (moPurchase / goalOrders * 100) : 0;
   const dailyAvg = dayOfMonth > 0 ? moPurchase / dayOfMonth : 0;
-  const onTrack = goalOrders > 0 ? (dailyAvg * daysLeft + moPurchase >= goalOrders * 0.95) : null;
 
   const goalHtml = `
     <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:8px">
@@ -810,7 +797,6 @@ const _reportCache = {};
 function refreshReport(ci) {
   const c = _reportCache[ci]; if (!c) return;
   document.getElementById('daily-report-' + ci).innerHTML = buildDailyReport(ci, c.todayData, c.adsToday, c.extra);
-  // 重新觸發 AI 生成
   generateAIReport(ci, c.todayData, c.adsToday, c.extra);
 }
 
@@ -932,6 +918,7 @@ function sortIcon(ci, field) {
   return `<span class="sort-icon">${s.sortDir === 'asc' ? '▲' : '▼'}</span>`;
 }
 
+// ── CHANGE 3 & 4 & 5: renderFlatTable 加影片欄位，移除原因欄 ──
 function renderFlatTable(ci, rawAds) {
   const el = document.getElementById('creative-' + ci);
   const s = getUiState(ci);
@@ -975,11 +962,24 @@ function renderFlatTable(ci, rawAds) {
     const linkCtr = impressions > 0 ? outboundClicks / impressions * 100 : 0;
     const cart = adv(ad, 'add_to_cart'), purchase = adv(ad, 'purchase');
     const cpa = adcpa(ad, 'purchase'), roas = spend > 0 ? adacv(ad, 'purchase') / spend : 0;
+
+    // ── CHANGE 3: 計算影片數據 ──
+    const vPlay = gvid(ad, 'video_play_actions');
+    const vP25  = gvid(ad, 'video_p25_watched_actions');
+    const vP95  = gvid(ad, 'video_p95_watched_actions');
+    // 25→95% 留存率：看完95%的人 / 看完25%的人，乘以10顯示為「幾成」
+    const vRetention = (vP25 > 0 && vP95 > 0) ? (vP95 / vP25 * 10) : null;
+
     const rec = recommendAd(ad, ci);
     const barW = Math.round(spend / globalMax * 60);
     const dispName = (ad.ad_name || '').length > 38 ? (ad.ad_name || '').slice(0, 38) + '…' : (ad.ad_name || '未命名');
     const kolTag = isKol ? '<span class="kol-tag">KOL</span>' : '';
     const rowClass = isKol ? 'class="kol-row"' : '';
+
+    // 留存率顏色：≥5成=綠、≥3成=橘、<3成=紅
+    const retColor = vRetention !== null
+      ? (vRetention >= 5 ? 'var(--green)' : vRetention >= 3 ? 'var(--amber)' : 'var(--red)')
+      : 'var(--text3)';
 
     rows += `<tr ${rowClass}>
       <td style="padding:8px 12px">
@@ -994,14 +994,17 @@ function renderFlatTable(ci, rawAds) {
       <td style="padding:8px 12px;text-align:right;font-weight:${s.sortBy === 'purchase' ? '700' : '400'}">${purchase > 0 ? purchase : '-'}</td>
       <td style="padding:8px 12px;text-align:right;font-weight:700"><span style="color:${cpaCl(cpa, ci)}">${fM(cpa)}</span></td>
       <td style="padding:8px 12px;text-align:right;font-weight:600;color:${rc(roas)}">${fX(roas)}</td>
+      <td style="padding:8px 12px;text-align:right;color:var(--text2)">${vPlay > 0 ? Math.round(vPlay).toLocaleString() : '-'}</td>
+      <td style="padding:8px 12px;text-align:right;color:var(--text2)">${vP25 > 0 ? Math.round(vP25).toLocaleString() : '-'}</td>
+      <td style="padding:8px 12px;text-align:right;color:var(--text2)">${vP95 > 0 ? Math.round(vP95).toLocaleString() : '-'}</td>
+      <td style="padding:8px 12px;text-align:right;font-weight:600;color:${retColor}">${vRetention !== null ? vRetention.toFixed(1) + '成' : '-'}</td>
       <td style="padding:8px 12px"><span class="rec-badge ${rec.badge}">${rec.label}</span></td>
-      <td style="padding:8px 12px;font-size:11px;color:var(--text2);max-width:160px;line-height:1.4">${rec.reason}</td>
     </tr>`;
   }
 
   el.innerHTML = `
     <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
-      統計區間：${periodLabel}｜${filterLabel} 共 <b>${classifiedAds.length}</b> 組｜CPA 顏色：綠=優秀 橘=普通 紅=差
+      統計區間：${periodLabel}｜${filterLabel} 共 <b>${classifiedAds.length}</b> 組｜CPA 顏色：綠=優秀 橘=普通 紅=差｜25→95% 顏色：綠≥5成 橘≥3成 紅&lt;3成
     </div>
     <div class="metrics-table">
       <table class="creative-table">
@@ -1013,8 +1016,11 @@ function renderFlatTable(ci, rawAds) {
           <th style="text-align:right" class="${thCls('purchase')}" onclick="setSort(${ci},'purchase')">購買 ${sortIcon(ci, 'purchase')}</th>
           <th style="text-align:right" class="${thCls('cpa')}" onclick="setSort(${ci},'cpa')">CPA ★ ${sortIcon(ci, 'cpa')}</th>
           <th style="text-align:right">ROAS</th>
+          <th style="text-align:right">播放次數</th>
+          <th style="text-align:right">播放25%</th>
+          <th style="text-align:right">播放95%</th>
+          <th style="text-align:right">25→95%</th>
           <th>建議</th>
-          <th>原因</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
@@ -1130,7 +1136,6 @@ function renderClient(ci, todayData, yesterdayData, adsToday, adsYesterday, extr
 
   if (todayData) {
     document.getElementById('daily-report-' + ci).innerHTML = buildDailyReport(ci, todayData, adsToday, extra);
-    // 啟動 AI 生成
     generateAIReport(ci, todayData, adsToday, extra);
   }
 
