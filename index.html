@@ -565,21 +565,24 @@ async function fetchClientData(ci) {
   const now=new Date(); const m1=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
   const res={today:[],yesterday:[],adsToday:[],adsYesterday:[],monthTotal:[],adsPrev:[],ads30d:[]};
   const r30=getExtendedDateRange(30);
+  const r15a=getExtendedDateRange(15);                        // 近 15 天
+  const r15b={since:getExtendedDateRange(30).since, until:getExtendedDateRange(16).since}; // 前 15 天
   for(const acc of client.accounts){
-    const[t,y,at,ay,mo,ap,a30]=await Promise.all([
+    const[t,y,at,ay,mo,ap,a30a,a30b]=await Promise.all([
       fetchInsights(acc,today,today).catch(()=>null),
       fetchInsights(acc,yesterday,yesterday).catch(()=>null),
       fetchAdInsights(acc,today).catch(()=>[]),
       fetchAdInsights(acc,yesterday).catch(()=>[]),
       fetchInsights(acc,m1,today).catch(()=>null),
       fetchAdInsights(acc,yesterday).catch(()=>[]),
-      fetchAdInsights(acc,r30.since,r30.until).catch(()=>[])
+      fetchAdInsights(acc,r15a.since,r15a.until).catch(e=>{console.warn('ads30d[0] err',e.message);return[];}),
+      fetchAdInsights(acc,r15b.since,r15b.until).catch(e=>{console.warn('ads30d[1] err',e.message);return[];})
     ]);
     if(t)res.today.push(t); if(y)res.yesterday.push(y); if(mo)res.monthTotal.push(mo);
     res.adsToday=res.adsToday.concat(at||[]);
     res.adsYesterday=res.adsYesterday.concat(ay||[]);
     res.adsPrev=res.adsPrev.concat(ap||[]);
-    res.ads30d=res.ads30d.concat(a30||[]);
+    res.ads30d=res.ads30d.concat(a30a||[]).concat(a30b||[]);
   }
   const uniqAdsets=(ads)=>new Set(
     ads.filter(a=>{
