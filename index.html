@@ -330,59 +330,56 @@ function parseKolAdset(adsetName) {
   return { audience, kolName };
 }
 
-function buildKolAudienceStats(adsData) {
-  // map: kolName → { audiences: { audienceName → { spend, adsetCount (set) } }, totalSpend }
+function buildKolAudienceStats(rawAds) {
+  // 先把同一個 adset_name 的花費加總（ad-level 同組可能多筆）
+  const adsetSpend = {};
+  for (const ad of rawAds) {
+    const spend = parseFloat(ad.spend || 0);
+    if (spend <= 0) continue;
+    const key = (ad.adset_name || '').trim();
+    if (!key) continue;
+    adsetSpend[key] = (adsetSpend[key] || 0) + spend;
+  }
+
+  // map: kolName → { audiences: { audienceName → totalSpend }, adsetSet }
   const kolMap = {};
 
-  for (const ad of adsData) {
-    const spend = parseFloat(ad.spend || 0);
-    if (spend < 100) continue; // 花費未達 100 排除
-
-    const parsed = parseKolAdset(ad.adset_name);
+  for (const [adsetName, spend] of Object.entries(adsetSpend)) {
+    if (spend < 100) continue; // 該廣告組合累計花費未達 100 排除
+    const parsed = parseKolAdset(adsetName);
     if (!parsed) continue;
-
     const { audience, kolName } = parsed;
-
     if (!kolMap[kolName]) kolMap[kolName] = { audiences: {}, totalSpend: 0, adsetSet: new Set() };
-    if (!kolMap[kolName].audiences[audience]) kolMap[kolName].audiences[audience] = { spend: 0, adsetNames: new Set() };
-
-    kolMap[kolName].audiences[audience].spend += spend;
-    kolMap[kolName].audiences[audience].adsetNames.add((ad.adset_name || '').trim());
+    if (!kolMap[kolName].audiences[audience]) kolMap[kolName].audiences[audience] = 0;
+    kolMap[kolName].audiences[audience] += spend;
     kolMap[kolName].totalSpend += spend;
-    // 用 adset_name 去重計算實際組數（未去重受眾）
-    kolMap[kolName].adsetSet.add((ad.adset_name || '').trim());
+    kolMap[kolName].adsetSet.add(adsetName);
   }
 
   return kolMap;
 }
 
-function buildKolAudienceBlock(ci, adsData) {
-  const r30 = getExtendedDateRange(30);
-  const kolMap = buildKolAudienceStats(adsData);
+function buildKolAudienceBlock(ci, rawAds) {
+  const kolMap = buildKolAudienceStats(rawAds);
   const kolNames = Object.keys(kolMap).sort();
 
   if (kolNames.length === 0) {
     return `<div class="kol-audience-body"><div style="color:var(--text3);font-size:13px;padding:8px 0">近30天內無符合條件的KOL興趣測試組合（需花費 > NT$100）</div></div>`;
   }
 
-  let totalAudiences = 0, totalSpend = 0, totalAdsets = 0;
   let body = '';
 
   for (const kolName of kolNames) {
     const data = kolMap[kolName];
-    const audienceList = Object.entries(data.audiences).sort((a,b) => b[1].spend - a[1].spend);
+    const audienceList = Object.entries(data.audiences).sort((a,b) => b[1] - a[1]);
     const uniqueAudienceCount = audienceList.length;
     const kolTotalSpend = data.totalSpend;
     const kolAdsetCount = data.adsetSet.size;
 
-    totalAudiences += uniqueAudienceCount;
-    totalSpend += kolTotalSpend;
-    totalAdsets += kolAdsetCount;
-
-    const chips = audienceList.map(([aud, info]) =>
+    const chips = audienceList.map(([aud, spend]) =>
       `<div class="kol-audience-chip">
         ${aud}
-        <span class="chip-spend">NT$${Math.round(info.spend).toLocaleString()}</span>
+        <span class="chip-spend">NT$${Math.round(spend).toLocaleString()}</span>
       </div>`
     ).join('');
 
@@ -396,15 +393,6 @@ function buildKolAudienceBlock(ci, adsData) {
         <div class="kol-audience-chips">${chips}</div>
       </div>`;
   }
-
-  // 總計列
-  body += `
-    <div style="display:flex;gap:14px;flex-wrap:wrap;padding-top:14px;border-top:1px solid var(--border);margin-top:4px">
-      <div class="kol-total-item"><span>KOL 人數</span><strong>${kolNames.length} 人</strong></div>
-      <div class="kol-total-item"><span>不重複受眾總數</span><strong>${totalAudiences} 種</strong></div>
-      <div class="kol-total-item"><span>廣告組合總數</span><strong>${totalAdsets} 組</strong></div>
-      <div class="kol-total-item"><span>KOL 興趣測試總花費</span><strong>NT$${Math.round(totalSpend).toLocaleString()}</strong></div>
-    </div>`;
 
   return `<div class="kol-audience-body">${body}</div>`;
 }
@@ -553,26 +541,23 @@ async function fetchAdsetInsights(accountId, s, e) {
 async function fetchClientData(ci) {
   const client=CLIENTS[ci]; const{today,yesterday}=getDateRange();
   const now=new Date(); const m1=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
-  const res={today:[],yesterday:[],adsToday:[],adsYesterday:[],monthTotal:[],adsPrev:[],ads14d:[],adsetsKol:[]};
-  const r14=getExtendedDateRange(14);
+  const res={today:[],yesterday:[],adsToday:[],adsYesterday:[],monthTotal:[],adsPrev:[],ads30d:[]};
   const r30=getExtendedDateRange(30);
   for(const acc of client.accounts){
-    const[t,y,at,ay,mo,ap,a14,ak]=await Promise.all([
+    const[t,y,at,ay,mo,ap,a30]=await Promise.all([
       fetchInsights(acc,today,today).catch(()=>null),
       fetchInsights(acc,yesterday,yesterday).catch(()=>null),
       fetchAdInsights(acc,today).catch(()=>[]),
       fetchAdInsights(acc,yesterday).catch(()=>[]),
       fetchInsights(acc,m1,today).catch(()=>null),
       fetchAdInsights(acc,yesterday).catch(()=>[]),
-      fetchAdInsights(acc,r14.since,r14.until).catch(()=>[]),
-      fetchAdsetInsights(acc,r30.since,r30.until).catch(()=>[])
+      fetchAdInsights(acc,r30.since,r30.until).catch(()=>[])
     ]);
     if(t)res.today.push(t); if(y)res.yesterday.push(y); if(mo)res.monthTotal.push(mo);
     res.adsToday=res.adsToday.concat(at||[]);
     res.adsYesterday=res.adsYesterday.concat(ay||[]);
     res.adsPrev=res.adsPrev.concat(ap||[]);
-    res.ads14d=(res.ads14d||[]).concat(a14||[]);
-    res.adsetsKol=res.adsetsKol.concat(ak||[]);
+    res.ads30d=res.ads30d.concat(a30||[]);
   }
   const uniqAdsets=(ads)=>new Set(
     ads.filter(a=>{
@@ -590,8 +575,7 @@ async function fetchClientData(ci) {
     monthTotal:mergeInsights(res.monthTotal),
     adsetCountToday:uniqAdsets(res.adsToday),
     adsetCountYesterday:uniqAdsets(res.adsPrev),
-    ads14d:res.ads14d,
-    adsetsKol:res.adsetsKol
+    ads30d:res.ads30d
   };
 }
 
@@ -710,7 +694,7 @@ function buildAIPrompt(ci, todayData, adsToday, extra) {
     });
   }
 
-  const ads14d = extra.ads14d || [];
+  const ads14d = extra.ads30d || [];
   const map14 = {};
   for (const ad of ads14d) {
     if (parseFloat(ad.spend || 0) <= 0) continue;
@@ -1315,7 +1299,7 @@ function renderClient(ci, todayData, yesterdayData, adsToday, adsYesterday, extr
   document.getElementById('creative-summary-' + ci).innerHTML = buildCreativeSummary(ci, adsToday, adsYesterday);
 
   // KOL 受眾測試區塊（用 adset level 近30天資料）
-  document.getElementById('kol-audience-' + ci).innerHTML = buildKolAudienceBlock(ci, extra.adsetsKol || []);
+  document.getElementById('kol-audience-' + ci).innerHTML = buildKolAudienceBlock(ci, extra.ads30d || []);
 
   _periodCache[ci + '_1d'] = adsToday;
   _uiState[ci] = { period: '1d', filterKol: 'all', sortBy: 'spend', sortDir: 'desc' };
@@ -1334,8 +1318,7 @@ async function loadClient(ci) {
       monthTotal: data.monthTotal,
       adsetCountToday: data.adsetCountToday,
       adsetCountYesterday: data.adsetCountYesterday,
-      ads14d: data.ads14d || [],
-      adsetsKol: data.adsetsKol || []
+      ads30d: data.ads30d || []
     });
   } catch (e) {
     dot.className = 'status-dot error'; txt.textContent = '資料載入失敗';
