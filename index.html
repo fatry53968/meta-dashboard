@@ -312,21 +312,35 @@ function isKolType(type, adName) {
    排除 RT
 ══════════════════════════════════════════════ */
 function parseKolAdset(adsetName) {
-  // 切分 " - "
-  const parts = (adsetName || '').split(/\s*-\s*/);
-  // 第一段必須含「興趣」
-  if (!parts[0] || !parts[0].includes('興趣')) return null;
-  // 第三段必須含「KOL」（不分大小寫）
-  if (!parts[2] || !parts[2].toUpperCase().includes('KOL')) return null;
+  const name = (adsetName || '').trim();
   // 排除含 RT 的
-  if ((adsetName || '').toUpperCase().includes('RT')) return null;
+  if (name.toUpperCase().includes('RT')) return null;
 
-  const audience = (parts[1] || '').trim();
-  // KOL 名稱：去掉 "KOL " 前綴
-  const kolRaw = (parts[2] || '').trim();
-  const kolName = kolRaw.replace(/^KOL\s*/i, '').trim();
+  // 切分 " - "
+  const parts = name.split(/\s*-\s*/);
+  if (parts.length < 3) return null;
 
-  if (!audience || !kolName) return null;
+  // 第一段必須含「興趣」（涵蓋「興趣」「興趣常態」等變體）
+  if (!parts[0].includes('興趣')) return null;
+
+  // 找到含「KOL」的那一段（通常是 index 2，但保險起見搜尋）
+  let kolPartIdx = -1;
+  for (let i = 1; i < parts.length; i++) {
+    if (parts[i].toUpperCase().includes('KOL')) { kolPartIdx = i; break; }
+  }
+  if (kolPartIdx === -1) return null;
+
+  // 受眾 = KOL段前一段（index kolPartIdx-1），避免受眾名稱含 "-" 時把多段合併
+  // 若 kolPartIdx > 2，把中間多段合併成受眾名
+  const audience = parts.slice(1, kolPartIdx).join(' - ').trim();
+  if (!audience) return null;
+
+  // KOL 名稱：去掉 "KOL " / "IG KOL " / "FB KOL " 等前綴，保留人名
+  const kolRaw = parts[kolPartIdx].trim();
+  // 提取最後一個「KOL」後面的人名
+  const kolName = kolRaw.replace(/^.*?KOL\s*/i, '').trim();
+  if (!kolName) return null;
+
   return { audience, kolName };
 }
 
@@ -514,7 +528,7 @@ async function fetchAdInsights(accountId, s, e) {
   const end=e||s; let all=[];
   let url=`https://graph.facebook.com/v19.0/act_${accountId}/insights?fields=${AD_FIELDS}&time_range={"since":"${s}","until":"${end}"}&level=ad&limit=200&access_token=${TOKEN}`;
   let pg=0;
-  while(url&&pg<5){
+  while(url&&pg<20){
     const res=await fetch(url); const data=await res.json();
     if(data.error) throw new Error(data.error.message+'(code:'+data.error.code+')');
     if(data.data) all=all.concat(data.data);
