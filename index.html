@@ -374,11 +374,19 @@ function buildKolAudienceStats(rawAds) {
 }
 
 function buildKolAudienceBlock(ci, rawAds) {
+  // Debug: count adsets with 興趣+KOL pattern before filtering
+  const debugTotal = rawAds.length;
+  const debugHasSpend = rawAds.filter(a => parseFloat(a.spend||0) > 0).length;
+  const debugSample = rawAds.filter(a => (a.adset_name||'').includes('興趣') && (a.adset_name||'').toUpperCase().includes('KOL')).slice(0,3).map(a=>a.adset_name).join(' | ');
+
   const kolMap = buildKolAudienceStats(rawAds);
   const kolNames = Object.keys(kolMap).sort();
 
   if (kolNames.length === 0) {
-    return `<div class="kol-audience-body"><div style="color:var(--text3);font-size:13px;padding:8px 0">近30天內無符合條件的KOL興趣測試組合（需花費 > NT$100）</div></div>`;
+    return `<div class="kol-audience-body">
+      <div style="color:var(--text3);font-size:13px;padding:8px 0">近30天內無符合條件的KOL興趣測試組合（需花費 > NT$100）</div>
+      <div style="color:#aaa;font-size:11px;margin-top:6px">🔍 Debug: 總廣告筆數 ${debugTotal}，有花費 ${debugHasSpend}，興趣+KOL 樣本: ${debugSample||'無'}</div>
+    </div>`;
   }
 
   let body = '';
