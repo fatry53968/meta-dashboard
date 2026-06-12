@@ -136,6 +136,14 @@
   .spend-bar-wrap { width:60px;height:6px;background:var(--surface2);border-radius:3px;display:inline-block;vertical-align:middle; }
   .spend-bar { height:6px;border-radius:3px;background:#1877f2; }
 
+  /* ── 素材強度 badge ── */
+  .tier-badge { display:inline-flex; align-items:center; justify-content:center; width:32px; height:22px; border-radius:6px; font-size:11px; font-weight:800; letter-spacing:0.02em; white-space:nowrap; }
+  .tier-T0 { background:#1a237e; color:#fff; }
+  .tier-T1 { background:#1565c0; color:#fff; }
+  .tier-T2 { background:#e65100; color:#fff; }
+  .tier-T3 { background:var(--surface2); color:var(--text2); border: 0.5px solid var(--border2); }
+  .tier-loading { background:var(--surface2); color:var(--text3); font-size:10px; }
+
   /* ── KOL 受眾測試區塊 ── */
   .kol-audience-box { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 20px; }
   .kol-audience-header { background: linear-gradient(135deg,#4a148c 0%,#7b1fa2 100%); padding: 12px 18px; display: flex; align-items: center; justify-content: space-between; }
@@ -307,45 +315,130 @@ function isKolType(type, adName) {
 }
 
 /* ══════════════════════════════════════════════
+   素材強度（Tier）計算
+   判斷條件（兩者同時滿足）：
+   T0: 開啟 adset ≥ 50 且 帳戶月花費 ≥ 100,000
+   T1: 開啟 adset ≥ 20 且 帳戶月花費 ≥ 50,000
+   T2: 開啟 adset ≥ 10 且 帳戶月花費 <  50,000
+   T3: 開啟 adset <  10 且 帳戶月花費 <  50,000
+
+   activeAdsetMap: Map<normAdName, count> — 該素材對應的開啟 adset 數
+   monthSpend: 帳戶本月總花費（數字）
+══════════════════════════════════════════════ */
+function calcCreativeTier(adName, activeAdsetMap, monthSpend) {
+  const count = activeAdsetMap.get(normName(adName)) || 0;
+  const ms = monthSpend || 0;
+
+  if (count >= 50 && ms >= 100000) return 'T0';
+  if (count >= 20 && ms >= 50000)  return 'T1';
+  if (count >= 10 && ms < 50000)   return 'T2';
+  return 'T3';
+}
+
+function tierBadgeHtml(tier) {
+  return `<span class="tier-badge tier-${tier}">${tier}</span>`;
+}
+
+/* ══════════════════════════════════════════════
+   拉 Active Adset 列表（方案 A：API 真實狀態）
+   只計 興趣、類似、KOL，排除 RT、ASC
+   回傳 Map<normAdName, Set<adsetId>>
+   → 需要先取 adset → 再取 ad，才能對應到 ad_name
+   為減少 API 呼叫，這裡採用兩步：
+   1. 取 active adsets (含 campaign_name)
+   2. 取這些 adsets 下的 ads (含 ad_name)
+══════════════════════════════════════════════ */
+async function fetchActiveAdsetMap(accountId) {
+  // Step 1: 取 active adsets
+  const adsetFields = 'id,name,campaign_id,effective_status,campaign{name}';
+  let adsets = [];
+  let url = `https://graph.facebook.com/v19.0/act_${accountId}/adsets?fields=${adsetFields}&effective_status=["ACTIVE"]&limit=200&access_token=${TOKEN}`;
+  let pg = 0;
+  while (url && pg < 10) {
+    const res = await fetch(url); const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    if (data.data) adsets = adsets.concat(data.data);
+    url = data.paging?.next || null; pg++;
+  }
+
+  // Step 2: 過濾 campaign 類型（排除 RT、ASC、素材；只留 興趣/類似/KOL）
+  const validAdsetIds = adsets
+    .filter(adset => {
+      const campName = (adset.campaign?.name || '').toUpperCase();
+      if (campName.includes('素材')) return false;
+      if (campName.includes('ASC')) return false;
+      if (campName.includes('RT')) return false;
+      if (campName.includes('互動') || campName.includes('流量') || campName.includes('觀看')) return false;
+      // 留下 興趣/類似/KOL（或其他含購買目標的）
+      return true;
+    })
+    .map(a => a.id);
+
+  if (validAdsetIds.length === 0) return new Map();
+
+  // Step 3: 批次取 ads（每次最多 50 個 adset）
+  const adNameToAdsetSet = new Map(); // normAdName → Set of adsetIds
+  const chunkSize = 50;
+  for (let i = 0; i < validAdsetIds.length; i += chunkSize) {
+    const chunk = validAdsetIds.slice(i, i + chunkSize);
+    // 用 batch request 取 ads
+    const batchPayload = chunk.map(adsetId => ({
+      method: 'GET',
+      relative_url: `${adsetId}/ads?fields=name,effective_status&effective_status=["ACTIVE"]&limit=100`
+    }));
+    const batchRes = await fetch(`https://graph.facebook.com/v19.0/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_token: TOKEN, batch: JSON.stringify(batchPayload) })
+    });
+    const batchData = await batchRes.json();
+    if (!Array.isArray(batchData)) continue;
+    for (let j = 0; j < batchData.length; j++) {
+      const item = batchData[j];
+      if (!item || item.code !== 200) continue;
+      try {
+        const parsed = JSON.parse(item.body);
+        const adsetId = chunk[j];
+        for (const ad of (parsed.data || [])) {
+          const key = normName(ad.name);
+          if (!adNameToAdsetSet.has(key)) adNameToAdsetSet.set(key, new Set());
+          adNameToAdsetSet.get(key).add(adsetId);
+        }
+      } catch(e) { /* skip */ }
+    }
+  }
+
+  // 轉成 Map<normAdName, count>
+  const result = new Map();
+  for (const [name, set] of adNameToAdsetSet) {
+    result.set(name, set.size);
+  }
+  return result;
+}
+
+/* ══════════════════════════════════════════════
    KOL 受眾測試分析
-   命名格式：興趣[ 常態] - {受眾} - KOL {名字} - {日期}
-   排除 RT
 ══════════════════════════════════════════════ */
 function parseKolAdset(adsetName) {
   const name = (adsetName || '').trim();
-  // 排除含 RT 的
   if (name.toUpperCase().includes('RT')) return null;
-
-  // 切分 " - "
   const parts = name.split(/\s*-\s*/);
   if (parts.length < 3) return null;
-
-  // 第一段必須含「興趣」（涵蓋「興趣」「興趣常態」等變體）
   if (!parts[0].includes('興趣')) return null;
-
-  // 找到含「KOL」的那一段（通常是 index 2，但保險起見搜尋）
   let kolPartIdx = -1;
   for (let i = 1; i < parts.length; i++) {
     if (parts[i].toUpperCase().includes('KOL')) { kolPartIdx = i; break; }
   }
   if (kolPartIdx === -1) return null;
-
-  // 受眾 = KOL段前一段（index kolPartIdx-1），避免受眾名稱含 "-" 時把多段合併
-  // 若 kolPartIdx > 2，把中間多段合併成受眾名
   const audience = parts.slice(1, kolPartIdx).join(' - ').trim();
   if (!audience) return null;
-
-  // KOL 名稱：去掉 "KOL " / "IG KOL " / "FB KOL " 等前綴，保留人名
   const kolRaw = parts[kolPartIdx].trim();
-  // 提取最後一個「KOL」後面的人名
   const kolName = kolRaw.replace(/^.*?KOL\s*/i, '').trim();
   if (!kolName) return null;
-
   return { audience, kolName };
 }
 
 function buildKolAudienceStats(rawAds) {
-  // 先把同一個 adset_name 的花費加總（ad-level 同組可能多筆）
   const adsetSpend = {};
   for (const ad of rawAds) {
     const spend = parseFloat(ad.spend || 0);
@@ -354,12 +447,9 @@ function buildKolAudienceStats(rawAds) {
     if (!key) continue;
     adsetSpend[key] = (adsetSpend[key] || 0) + spend;
   }
-
-  // map: kolName → { audiences: { audienceName → totalSpend }, adsetSet }
   const kolMap = {};
-
   for (const [adsetName, spend] of Object.entries(adsetSpend)) {
-    if (spend < 100) continue; // 該廣告組合累計花費未達 100 排除
+    if (spend < 100) continue;
     const parsed = parseKolAdset(adsetName);
     if (!parsed) continue;
     const { audience, kolName } = parsed;
@@ -369,12 +459,10 @@ function buildKolAudienceStats(rawAds) {
     kolMap[kolName].totalSpend += spend;
     kolMap[kolName].adsetSet.add(adsetName);
   }
-
   return kolMap;
 }
 
 function buildKolAudienceBlock(ci, rawAds) {
-  // Debug: count adsets with 興趣+KOL pattern before filtering
   const debugTotal = rawAds.length;
   const debugHasSpend = rawAds.filter(a => parseFloat(a.spend||0) > 0).length;
   const debugSample = rawAds.filter(a => (a.adset_name||'').includes('興趣') && (a.adset_name||'').toUpperCase().includes('KOL')).slice(0,3).map(a=>a.adset_name).join(' | ');
@@ -390,21 +478,15 @@ function buildKolAudienceBlock(ci, rawAds) {
   }
 
   let body = '';
-
   for (const kolName of kolNames) {
     const data = kolMap[kolName];
     const audienceList = Object.entries(data.audiences).sort((a,b) => b[1] - a[1]);
     const uniqueAudienceCount = audienceList.length;
     const kolTotalSpend = data.totalSpend;
     const kolAdsetCount = data.adsetSet.size;
-
     const chips = audienceList.map(([aud, spend]) =>
-      `<div class="kol-audience-chip">
-        ${aud}
-        <span class="chip-spend">NT$${Math.round(spend).toLocaleString()}</span>
-      </div>`
+      `<div class="kol-audience-chip">${aud}<span class="chip-spend">NT$${Math.round(spend).toLocaleString()}</span></div>`
     ).join('');
-
     body += `
       <div class="kol-person-block">
         <div class="kol-person-name">
@@ -415,15 +497,13 @@ function buildKolAudienceBlock(ci, rawAds) {
         <div class="kol-audience-chips">${chips}</div>
       </div>`;
   }
-
   return `<div class="kol-audience-body">${body}</div>`;
 }
 
 /* ══════════════════════════════════════════════
-   KOL 素材小計區塊（依素材名稱合併，只顯示總計）
+   KOL 素材小計區塊
 ══════════════════════════════════════════════ */
 function buildKolSummaryBlock(ci, rawAds) {
-  // 過濾出 KOL 類型的廣告（campaign 含 KOL 或 adset/ad 含 KOL）
   const kolAds = rawAds.filter(ad => {
     if (parseFloat(ad.spend || 0) <= 0) return false;
     const type = classType(ad.campaign_name, ci);
@@ -434,9 +514,7 @@ function buildKolSummaryBlock(ci, rawAds) {
     return `<div class="kol-summary-body"><div style="color:var(--text3);font-size:13px">昨天無KOL廣告花費</div></div>`;
   }
 
-  // 合併同名素材
   const merged = mergeAdsByName(kolAds, ci);
-
   let totalSpend = 0, totalPurchase = 0, totalAcv = 0, totalCart = 0, totalImpressions = 0, totalClicks = 0;
   for (const ad of merged) {
     totalSpend += parseFloat(ad.spend || 0);
@@ -455,7 +533,6 @@ function buildKolSummaryBlock(ci, rawAds) {
   const rc = r => r >= 3 ? 'var(--green)' : r >= 2 ? 'var(--amber)' : r > 0 ? 'var(--red)' : '#4a148c';
   const cpaCl = (cpa) => { const t = CLIENTS[ci].cpa; return cpa <= 0 ? '#4a148c' : cpa < t.good ? 'var(--green)' : cpa < t.ok ? 'var(--amber)' : 'var(--red)'; };
 
-  // 每個 KOL 素材的明細列（依花費排序）
   const sortedAds = [...merged].sort((a, b) => parseFloat(b.spend || 0) - parseFloat(a.spend || 0));
   const rows = sortedAds.map(ad => {
     const sp = parseFloat(ad.spend || 0);
@@ -546,7 +623,6 @@ async function fetchAdInsights(accountId, s, e) {
 }
 
 async function fetchAdsetInsights(accountId, s, e) {
-  // 用 adset level 抓，for KOL audience analysis
   const end = e || s; let all = [];
   const fields = 'adset_name,campaign_name,spend,actions,action_values,cost_per_action_type';
   let url = `https://graph.facebook.com/v19.0/act_${accountId}/insights?fields=${fields}&time_range={"since":"${s}","until":"${end}"}&level=adset&limit=200&access_token=${TOKEN}`;
@@ -565,8 +641,23 @@ async function fetchClientData(ci) {
   const now=new Date(); const m1=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
   const res={today:[],yesterday:[],adsToday:[],adsYesterday:[],monthTotal:[],adsPrev:[],ads30d:[]};
   const r30=getExtendedDateRange(30);
-  const r15a=getExtendedDateRange(15);                        // 近 15 天
-  const r15b={since:getExtendedDateRange(30).since, until:getExtendedDateRange(16).since}; // 前 15 天
+  const r15a=getExtendedDateRange(15);
+  const r15b={since:getExtendedDateRange(30).since, until:getExtendedDateRange(16).since};
+
+  // 同步拉 active adsets（方案 A）
+  const activeAdsetMaps = [];
+  for (const acc of client.accounts) {
+    const m = await fetchActiveAdsetMap(acc).catch(e => { console.warn('activeAdset err', e.message); return new Map(); });
+    activeAdsetMaps.push(m);
+  }
+  // 合併多帳號的 activeAdsetMap
+  const mergedActiveMap = new Map();
+  for (const m of activeAdsetMaps) {
+    for (const [name, count] of m) {
+      mergedActiveMap.set(name, (mergedActiveMap.get(name) || 0) + count);
+    }
+  }
+
   for(const acc of client.accounts){
     const[t,y,at,ay,mo,ap,a30a,a30b]=await Promise.all([
       fetchInsights(acc,today,today).catch(()=>null),
@@ -600,7 +691,8 @@ async function fetchClientData(ci) {
     monthTotal:mergeInsights(res.monthTotal),
     adsetCountToday:uniqAdsets(res.adsToday),
     adsetCountYesterday:uniqAdsets(res.adsPrev),
-    ads30d:res.ads30d
+    ads30d:res.ads30d,
+    activeAdsetMap: mergedActiveMap   // ★ 新增：開啟中的 adset map
   };
 }
 
@@ -1095,11 +1187,18 @@ function sortIcon(ci, field) {
   return `<span class="sort-icon">${s.sortDir === 'asc' ? '▲' : '▼'}</span>`;
 }
 
+/* ★ 核心修改：renderFlatTable 加入素材強度欄 */
 function renderFlatTable(ci, rawAds) {
   const el = document.getElementById('creative-' + ci);
   const s = getUiState(ci);
   const { period, filterKol, sortBy, sortDir } = s;
   const { today: d1 } = getDateRange();
+
+  // 取得帳戶月花費（從 cache）
+  const cachedData = _reportCache[ci];
+  const monthSpend = cachedData?.extra?.monthTotal ? parseFloat(cachedData.extra.monthTotal.spend || 0) : 0;
+  // 取得 active adset map
+  const activeAdsetMap = cachedData?.extra?.activeAdsetMap || new Map();
 
   let classifiedAds = mergeAdsByName(rawAds, ci)
     .map(ad => ({ ...ad, _type: classType(ad._campaign || ad.campaign_name, ci) }))
@@ -1129,6 +1228,14 @@ function renderFlatTable(ci, rawAds) {
   const filterLabel = filterKol === 'kol' ? '🌟 KOL 素材' : filterKol === 'non-kol' ? '非 KOL 素材' : '全部素材';
   const thCls = (field) => `sortable-th${s.sortBy === field ? ' sort-active' : ''}`;
 
+  // 素材強度圖例
+  const tierLegend = `
+    <span style="font-size:11px;color:var(--text3);margin-left:8px">素材強度：</span>
+    <span class="tier-badge tier-T0" style="font-size:10px;width:auto;padding:1px 6px">T0</span><span style="font-size:10px;color:var(--text3);margin-right:4px"> ≥50組+月10萬</span>
+    <span class="tier-badge tier-T1" style="font-size:10px;width:auto;padding:1px 6px">T1</span><span style="font-size:10px;color:var(--text3);margin-right:4px"> ≥20組+月5萬</span>
+    <span class="tier-badge tier-T2" style="font-size:10px;width:auto;padding:1px 6px">T2</span><span style="font-size:10px;color:var(--text3);margin-right:4px"> ≥10組+月&lt;5萬</span>
+    <span class="tier-badge tier-T3" style="font-size:10px;width:auto;padding:1px 6px">T3</span><span style="font-size:10px;color:var(--text3)"> 其餘</span>`;
+
   let rows = '';
   for (const ad of classifiedAds) {
     const isKol = isKolType(ad._type, ad.ad_name);
@@ -1151,7 +1258,16 @@ function renderFlatTable(ci, rawAds) {
     const rowClass = isKol ? 'class="kol-row"' : '';
     const retColor = vRetention !== null ? (vRetention >= 5 ? 'var(--green)' : vRetention >= 3 ? 'var(--amber)' : 'var(--red)') : 'var(--text3)';
 
+    // ★ 計算素材強度
+    const tier = calcCreativeTier(ad.ad_name, activeAdsetMap, monthSpend);
+    const activeCount = activeAdsetMap.get(normName(ad.ad_name)) || 0;
+    const tierHtml = `<div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+      ${tierBadgeHtml(tier)}
+      <span style="font-size:9px;color:var(--text3);white-space:nowrap">${activeCount}組</span>
+    </div>`;
+
     rows += `<tr ${rowClass}>
+      <td style="padding:8px 10px;text-align:center;white-space:nowrap">${tierHtml}</td>
       <td style="padding:8px 12px">
         <div style="display:flex;align-items:flex-start;gap:4px">
           ${isKol ? '<span class="kol-dot" style="margin-top:5px"></span>' : ''}
@@ -1174,12 +1290,14 @@ function renderFlatTable(ci, rawAds) {
   }
 
   el.innerHTML = `
-    <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
-      統計區間：${periodLabel}｜${filterLabel} 共 <b>${classifiedAds.length}</b> 組｜CPA 顏色：綠=優秀 橘=普通 紅=差｜25→95% 顏色：綠≥5成 橘≥3成 紅&lt;3成
+    <div style="font-size:11px;color:var(--text3);margin-bottom:6px;display:flex;flex-wrap:wrap;align-items:center;gap:4px">
+      <span>統計區間：${periodLabel}｜${filterLabel} 共 <b>${classifiedAds.length}</b> 組｜CPA 顏色：綠=優秀 橘=普通 紅=差｜25→95% 顏色：綠≥5成 橘≥3成 紅&lt;3成</span>
+      ${tierLegend}
     </div>
     <div class="metrics-table">
       <table class="creative-table">
         <thead><tr>
+          <th style="text-align:center;min-width:52px">強度</th>
           <th>廣告名稱</th>
           <th style="text-align:right" class="${thCls('spend')}" onclick="setSort(${ci},'spend')">花費 ${sortIcon(ci, 'spend')}</th>
           <th style="text-align:right">CTR(連結)</th>
@@ -1322,8 +1440,6 @@ function renderClient(ci, todayData, yesterdayData, adsToday, adsYesterday, extr
   }
 
   document.getElementById('creative-summary-' + ci).innerHTML = buildCreativeSummary(ci, adsToday, adsYesterday);
-
-  // KOL 受眾測試區塊（用 adset level 近30天資料）
   document.getElementById('kol-audience-' + ci).innerHTML = buildKolAudienceBlock(ci, extra.ads30d || []);
 
   _periodCache[ci + '_1d'] = adsToday;
@@ -1343,7 +1459,8 @@ async function loadClient(ci) {
       monthTotal: data.monthTotal,
       adsetCountToday: data.adsetCountToday,
       adsetCountYesterday: data.adsetCountYesterday,
-      ads30d: data.ads30d || []
+      ads30d: data.ads30d || [],
+      activeAdsetMap: data.activeAdsetMap || new Map()   // ★ 傳入 active adset map
     });
   } catch (e) {
     dot.className = 'status-dot error'; txt.textContent = '資料載入失敗';
