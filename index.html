@@ -342,17 +342,22 @@ function tierBadgeHtml(tier) {
 /* ══════════════════════════════════════════════
    拉 Active Adset 列表（方案 A：API 真實狀態）
    只計 興趣、類似、KOL，排除 RT、ASC
-   回傳 Map<normAdName, Set<adsetId>>
-   → 需要先取 adset → 再取 ad，才能對應到 ad_name
-   為減少 API 呼叫，這裡採用兩步：
-   1. 取 active adsets (含 campaign_name)
-   2. 取這些 adsets 下的 ads (含 ad_name)
+   只計 effective_status = ACTIVE（學習）或 LEARNING_LIMITED（學習效果有限）
+   排除 SCHEDULED（已排定時間）及其他非投遞中狀態
+   回傳 Map<normAdName, count>
 ══════════════════════════════════════════════ */
+
+// Meta adset effective_status 白名單：只有真正在跑的才計入
+const VALID_ADSET_STATUSES = new Set(['ACTIVE', 'LEARNING_LIMITED']);
+
 async function fetchActiveAdsetMap(accountId) {
-  // Step 1: 取 active adsets
-  const adsetFields = 'id,name,campaign_id,effective_status,campaign{name}';
+  // Step 1: 取開關為開啟（configured_status=ACTIVE）的所有 adsets，
+  //         同時拿回 effective_status 做二次過濾
+  const adsetFields = 'id,name,effective_status,configured_status,campaign{name}';
   let adsets = [];
-  let url = `https://graph.facebook.com/v19.0/act_${accountId}/adsets?fields=${adsetFields}&effective_status=["ACTIVE"]&limit=200&access_token=${TOKEN}`;
+  // 用 configured_status 篩（開關開著的），不在 API 層用 effective_status 篩，
+  // 因為 effective_status=ACTIVE 在 API 層會把 SCHEDULED 也帶進來
+  let url = `https://graph.facebook.com/v19.0/act_${accountId}/adsets?fields=${adsetFields}&configured_status=["ACTIVE"]&limit=200&access_token=${TOKEN}`;
   let pg = 0;
   while (url && pg < 10) {
     const res = await fetch(url); const data = await res.json();
@@ -361,15 +366,18 @@ async function fetchActiveAdsetMap(accountId) {
     url = data.paging?.next || null; pg++;
   }
 
-  // Step 2: 過濾 campaign 類型（排除 RT、ASC、素材；只留 興趣/類似/KOL）
+  // Step 2: 雙重過濾
+  //   (a) effective_status 必須是 ACTIVE 或 LEARNING_LIMITED（排除 SCHEDULED 等）
+  //   (b) campaign 類型排除 RT、ASC、素材、流量/互動/觀看
   const validAdsetIds = adsets
     .filter(adset => {
+      // 只要學習中或學習效果有限
+      if (!VALID_ADSET_STATUSES.has(adset.effective_status)) return false;
       const campName = (adset.campaign?.name || '').toUpperCase();
       if (campName.includes('素材')) return false;
       if (campName.includes('ASC')) return false;
       if (campName.includes('RT')) return false;
       if (campName.includes('互動') || campName.includes('流量') || campName.includes('觀看')) return false;
-      // 留下 興趣/類似/KOL（或其他含購買目標的）
       return true;
     })
     .map(a => a.id);
@@ -381,10 +389,10 @@ async function fetchActiveAdsetMap(accountId) {
   const chunkSize = 50;
   for (let i = 0; i < validAdsetIds.length; i += chunkSize) {
     const chunk = validAdsetIds.slice(i, i + chunkSize);
-    // 用 batch request 取 ads
+    // 只取 ad 開關也是開著的
     const batchPayload = chunk.map(adsetId => ({
       method: 'GET',
-      relative_url: `${adsetId}/ads?fields=name,effective_status&effective_status=["ACTIVE"]&limit=100`
+      relative_url: `${adsetId}/ads?fields=name,effective_status,configured_status&configured_status=["ACTIVE"]&limit=100`
     }));
     const batchRes = await fetch(`https://graph.facebook.com/v19.0/`, {
       method: 'POST',
