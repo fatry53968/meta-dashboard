@@ -363,17 +363,25 @@ async function fetchActiveAdsetMap(accountId) {
     'PENDING_BILLING_INFO', 'CAMPAIGN_GROUP_PAUSED'
   ]);
 
-  // 不帶 effective_status 篩選，全拉後程式層判斷，避免 Meta API 多值格式問題
-  const adsetFields = 'id,name,effective_status,campaign{name,effective_status}';
+  // Meta API effective_status 合法值：ACTIVE, PAUSED, IN_PROCESS, WITH_ISSUES 等
+  // 「學習中」= IN_PROCESS，「學習效果有限」= WITH_ISSUES，「正常投遞」= ACTIVE
+  // 需要分三次請求（API 只接受單一值或小陣列）
+  const adsetFields = 'id,name,effective_status,campaign{name}';
   let adsets = [];
-  let url = `https://graph.facebook.com/v19.0/act_${accountId}/adsets?fields=${adsetFields}&limit=200&access_token=${TOKEN}`;
-  let pg = 0;
-  while (url && pg < 10) {
-    const res = await fetch(url); const data = await res.json();
-    if (data.error) { console.warn(`[TierDebug] fetchActiveAdsetMap error act_${accountId}:`, data.error.message); return new Map(); }
-    if (data.data) adsets = adsets.concat(data.data);
-    url = data.paging?.next || null; pg++;
+  const statusesToFetch = ['ACTIVE', 'IN_PROCESS', 'WITH_ISSUES'];
+  for (const status of statusesToFetch) {
+    let url = `https://graph.facebook.com/v19.0/act_${accountId}/adsets?fields=${adsetFields}&effective_status=["${status}"]&limit=200&access_token=${TOKEN}`;
+    let pg = 0;
+    while (url && pg < 10) {
+      const res = await fetch(url); const data = await res.json();
+      if (data.error) { console.warn(`[TierDebug] act_${accountId} status=${status} error:`, data.error.message); break; }
+      if (data.data) adsets = adsets.concat(data.data);
+      url = data.paging?.next || null; pg++;
+    }
   }
+  // 去重
+  const seen = new Set();
+  adsets = adsets.filter(a => { if (seen.has(a.id)) return false; seen.add(a.id); return true; });
 
   console.log(`[TierDebug] act_${accountId} total=${adsets.length}, statuses:`, (() => { const c={}; adsets.forEach(a=>c[a.effective_status]=(c[a.effective_status]||0)+1); return c; })());
   return buildAdsetMap(accountId, adsets);
@@ -382,9 +390,11 @@ async function fetchActiveAdsetMap(accountId) {
 async function buildAdsetMap(accountId, adsets) {
   // 判斷「正在投遞中」：
   // effective_status 不在暫停/刪除清單，且 campaign 也沒被暫停
+  // 這裡其實不需要再排除（上面 API 已只拉 ACTIVE/IN_PROCESS/WITH_ISSUES）
+  // 但保留作為防呆，移除 fallback 可能帶進來的暫停狀態
   const EXCLUDED = new Set([
     'PAUSED','CAMPAIGN_PAUSED','ADSET_PAUSED','DELETED','ARCHIVED',
-    'PENDING_REVIEW','DISAPPROVED','PENDING_BILLING_INFO','CAMPAIGN_GROUP_PAUSED'
+    'PENDING_REVIEW','DISAPPROVED','PREAPPROVED','PENDING_BILLING_INFO'
   ]);
 
   const validAdsets = adsets.filter(adset => {
