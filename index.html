@@ -348,39 +348,70 @@ function tierBadgeHtml(tier) {
 ══════════════════════════════════════════════ */
 
 /* ══════════════════════════════════════════════
-   素材強度：改用 ads30d insights 計算
-   近30天有花費的不重複 adset 數 per 素材名稱
-   不需要額外 API call，直接從已有資料計算
+   拉 Active Adset 列表
+   effective_status=ACTIVE 涵蓋「學習中」「學習效果有限」「正常投遞」
    排除 RT、ASC、素材、流量/互動/觀看
+   回傳 Map<normAdName, count>
 ══════════════════════════════════════════════ */
-function buildActiveAdsetMapFromInsights(adsToday, ci) {
-  // 用「昨天有花費的 adset」計算組數
-  // 昨天有花費 = 昨天確實在投遞中，最接近「開啟中」的判斷
-  const adNameToAdsetSet = new Map(); // normAdName → Set<adset_name>
+async function fetchActiveAdsetMap(accountId) {
+  const adsetFields = 'id,name,effective_status,campaign{name}';
+  let adsets = [];
+  let url = `https://graph.facebook.com/v19.0/act_${accountId}/adsets?fields=${adsetFields}&effective_status=["ACTIVE"]&limit=200&access_token=${TOKEN}`;
+  let pg = 0;
+  while (url && pg < 10) {
+    const res = await fetch(url); const data = await res.json();
+    if (data.error) { console.warn(`fetchActiveAdsetMap err act_${accountId}:`, data.error.message); return new Map(); }
+    if (data.data) adsets = adsets.concat(data.data);
+    url = data.paging?.next || null; pg++;
+  }
 
-  for (const ad of adsToday) {
-    if (parseFloat(ad.spend || 0) <= 0) continue;
-    const type = classType(ad.campaign_name, ci);
-    if (type === '__SKIP__') continue;
-    const campName = (ad.campaign_name || '').toUpperCase();
-    if (campName.includes('RT')) continue;
-    if (campName.includes('ASC')) continue;
+  // 過濾 campaign 類型
+  const validAdsets = adsets.filter(adset => {
+    const campName = (adset.campaign?.name || '').toUpperCase();
+    if (campName.includes('素材')) return false;
+    if (campName.includes('ASC')) return false;
+    if (campName.includes('RT')) return false;
+    if (campName.includes('互動') || campName.includes('流量') || campName.includes('觀看')) return false;
+    return true;
+  });
 
-    const key = normName(ad.ad_name);
-    const adsetKey = (ad.adset_name || '').trim();
-    if (!adsetKey) continue;
+  if (validAdsets.length === 0) return new Map();
 
-    if (!adNameToAdsetSet.has(key)) adNameToAdsetSet.set(key, new Set());
-    adNameToAdsetSet.get(key).add(adsetKey);
+  // 批次取 ads
+  const adNameToAdsetSet = new Map();
+  const chunkSize = 50;
+  for (let i = 0; i < validAdsets.length; i += chunkSize) {
+    const chunk = validAdsets.slice(i, i + chunkSize).map(a => a.id);
+    const batchPayload = chunk.map(adsetId => ({
+      method: 'GET',
+      relative_url: `${adsetId}/ads?fields=name&limit=200`
+    }));
+    const batchRes = await fetch(`https://graph.facebook.com/v19.0/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_token: TOKEN, batch: JSON.stringify(batchPayload) })
+    });
+    const batchData = await batchRes.json();
+    if (!Array.isArray(batchData)) continue;
+    for (let j = 0; j < batchData.length; j++) {
+      const item = batchData[j];
+      if (!item || item.code !== 200) continue;
+      try {
+        const parsed = JSON.parse(item.body);
+        const adsetId = chunk[j];
+        for (const ad of (parsed.data || [])) {
+          const key = normName(ad.name);
+          if (!adNameToAdsetSet.has(key)) adNameToAdsetSet.set(key, new Set());
+          adNameToAdsetSet.get(key).add(adsetId);
+        }
+      } catch(e) { /* skip */ }
+    }
   }
 
   const result = new Map();
   for (const [name, set] of adNameToAdsetSet) result.set(name, set.size);
   return result;
 }
-
-// 保留空實作，讓 fetchClientData 不報錯（實際不再呼叫 API）
-async function fetchActiveAdsetMap(accountId) { return new Map(); }
 
 /* ══════════════════════════════════════════════
    KOL 受眾測試分析
@@ -610,8 +641,18 @@ async function fetchClientData(ci) {
   const r15a=getExtendedDateRange(15);
   const r15b={since:getExtendedDateRange(30).since, until:getExtendedDateRange(16).since};
 
-  // activeAdsetMap 改在資料全部載入後，用 ads30d insights 計算（不需要額外 API）
-  // 這裡先留空 Map，最後 fetchClientData return 時再組
+  // 拉各帳號的 active adset map（effective_status=ACTIVE 涵蓋學習中/學習效果有限）
+  const activeAdsetMaps = [];
+  for (const acc of client.accounts) {
+    const m = await fetchActiveAdsetMap(acc).catch(() => new Map());
+    activeAdsetMaps.push(m);
+  }
+  const mergedActiveMap = new Map();
+  for (const m of activeAdsetMaps) {
+    for (const [name, count] of m) {
+      mergedActiveMap.set(name, (mergedActiveMap.get(name) || 0) + count);
+    }
+  }
 
   for(const acc of client.accounts){
     const[t,y,at,ay,mo,ap,a30a,a30b]=await Promise.all([
@@ -646,7 +687,8 @@ async function fetchClientData(ci) {
     monthTotal:mergeInsights(res.monthTotal),
     adsetCountToday:uniqAdsets(res.adsToday),
     adsetCountYesterday:uniqAdsets(res.adsPrev),
-    ads30d:res.ads30d
+    ads30d:res.ads30d,
+    activeAdsetMap: mergedActiveMap
   };
 }
 
@@ -1152,10 +1194,7 @@ function renderFlatTable(ci, rawAds) {
   const cachedData = _reportCache[ci];
   const monthSpend = cachedData?.extra?.monthTotal ? parseFloat(cachedData.extra.monthTotal.spend || 0) : 0;
   // 用 ads30d insights 計算素材強度（不需額外 API）
-  // 用昨天有花費的 adset 計算組數（最接近「開啟中」）
-  const activeAdsetMap = cachedData?.adsToday
-    ? buildActiveAdsetMapFromInsights(cachedData.adsToday, ci)
-    : new Map();
+  const activeAdsetMap = cachedData?.extra?.activeAdsetMap || new Map();
 
   let classifiedAds = mergeAdsByName(rawAds, ci)
     .map(ad => ({ ...ad, _type: classType(ad._campaign || ad.campaign_name, ci) }))
@@ -1417,6 +1456,7 @@ async function loadClient(ci) {
       adsetCountToday: data.adsetCountToday,
       adsetCountYesterday: data.adsetCountYesterday,
       ads30d: data.ads30d || [],
+      activeAdsetMap: data.activeAdsetMap || new Map(),
 
     });
   } catch (e) {
