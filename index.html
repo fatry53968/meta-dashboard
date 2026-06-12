@@ -347,111 +347,40 @@ function tierBadgeHtml(tier) {
    回傳 Map<normAdName, count>
 ══════════════════════════════════════════════ */
 
-async function fetchActiveAdsetMap(accountId) {
-  // Meta adset effective_status 只反映開關狀態（ACTIVE/PAUSED/CAMPAIGN_PAUSED 等）
-  // 「學習中」「學習效果有限」對應的是 configured_status=ACTIVE（開關開著）
-  // + effective_status 不是 PAUSED 系列
-  // 判斷邏輯：adset 開關開著（configured_status=ACTIVE）
-  //           且 campaign 開關也開著（effective_status != CAMPAIGN_PAUSED）
-  //           且 adset 本身沒被暫停（effective_status != PAUSED）
-  // 這就是 Meta 後台顯示「學習中」或「學習效果有限」的 adset
+/* ══════════════════════════════════════════════
+   素材強度：改用 ads30d insights 計算
+   近30天有花費的不重複 adset 數 per 素材名稱
+   不需要額外 API call，直接從已有資料計算
+   排除 RT、ASC、素材、流量/互動/觀看
+══════════════════════════════════════════════ */
+function buildActiveAdsetMapFromInsights(ads30d, ci) {
+  // ads30d 是近30天的 ad-level insights，每筆有 adset_name + campaign_name
+  const adNameToAdsetSet = new Map(); // normAdName → Set<adset_name>
 
-  // PAUSED 狀態集合（排除這些）
-  const PAUSED_STATUSES = new Set([
-    'PAUSED', 'CAMPAIGN_PAUSED', 'ADSET_PAUSED',
-    'DELETED', 'ARCHIVED', 'PENDING_REVIEW', 'DISAPPROVED',
-    'PENDING_BILLING_INFO', 'CAMPAIGN_GROUP_PAUSED'
-  ]);
+  for (const ad of ads30d) {
+    if (parseFloat(ad.spend || 0) <= 0) continue;
+    const type = classType(ad.campaign_name, ci);
+    if (type === '__SKIP__') continue;
+    // 排除 RT、ASC（classType 已處理，但再防呆）
+    const campName = (ad.campaign_name || '').toUpperCase();
+    if (campName.includes('RT')) continue;
+    if (campName.includes('ASC')) continue;
 
-  // Meta API effective_status 合法值：ACTIVE, PAUSED, IN_PROCESS, WITH_ISSUES 等
-  // 「學習中」= IN_PROCESS，「學習效果有限」= WITH_ISSUES，「正常投遞」= ACTIVE
-  // 需要分三次請求（API 只接受單一值或小陣列）
-  const adsetFields = 'id,name,effective_status,campaign{name}';
-  let adsets = [];
-  const statusesToFetch = ['ACTIVE', 'IN_PROCESS', 'WITH_ISSUES'];
-  for (const status of statusesToFetch) {
-    let url = `https://graph.facebook.com/v19.0/act_${accountId}/adsets?fields=${adsetFields}&effective_status=["${status}"]&limit=200&access_token=${TOKEN}`;
-    let pg = 0;
-    while (url && pg < 10) {
-      const res = await fetch(url); const data = await res.json();
-      if (data.error) { console.warn(`[TierDebug] act_${accountId} status=${status} error:`, data.error.message); break; }
-      if (data.data) adsets = adsets.concat(data.data);
-      url = data.paging?.next || null; pg++;
-    }
-  }
-  // 去重
-  const seen = new Set();
-  adsets = adsets.filter(a => { if (seen.has(a.id)) return false; seen.add(a.id); return true; });
+    const key = normName(ad.ad_name);
+    const adsetKey = (ad.adset_name || '').trim();
+    if (!adsetKey) continue;
 
-  console.log(`[TierDebug] act_${accountId} total=${adsets.length}, statuses:`, (() => { const c={}; adsets.forEach(a=>c[a.effective_status]=(c[a.effective_status]||0)+1); return c; })());
-  return buildAdsetMap(accountId, adsets);
-}
-
-async function buildAdsetMap(accountId, adsets) {
-  // 判斷「正在投遞中」：
-  // effective_status 不在暫停/刪除清單，且 campaign 也沒被暫停
-  // 這裡其實不需要再排除（上面 API 已只拉 ACTIVE/IN_PROCESS/WITH_ISSUES）
-  // 但保留作為防呆，移除 fallback 可能帶進來的暫停狀態
-  const EXCLUDED = new Set([
-    'PAUSED','CAMPAIGN_PAUSED','ADSET_PAUSED','DELETED','ARCHIVED',
-    'PENDING_REVIEW','DISAPPROVED','PREAPPROVED','PENDING_BILLING_INFO'
-  ]);
-
-  const validAdsets = adsets.filter(adset => {
-    // adset 本身必須是投遞中（不在排除清單）
-    if (EXCLUDED.has(adset.effective_status)) return false;
-    // campaign 類型過濾（campaign 可能沒拉到，用 name 判斷即可）
-    const campName = (adset.campaign?.name || '').toUpperCase();
-    if (campName.includes('素材')) return false;
-    if (campName.includes('ASC')) return false;
-    if (campName.includes('RT')) return false;
-    if (campName.includes('互動') || campName.includes('流量') || campName.includes('觀看')) return false;
-    return true;
-  });
-
-  // Debug：印出前5筆非排除的 adset 狀態，方便確認
-  const sample = adsets.filter(a => !EXCLUDED.has(a.effective_status)).slice(0,5);
-  console.log(`[TierDebug] act_${accountId} validAdsets=${validAdsets.length}, sample:`, sample.map(a=>({name:a.name.slice(0,30), status:a.effective_status})));
-  if (validAdsets.length === 0) return new Map();
-
-  const validAdsetIds = validAdsets.map(a => a.id);
-
-  // 批次取 ads
-  const adNameToAdsetSet = new Map();
-  const chunkSize = 50;
-  for (let i = 0; i < validAdsetIds.length; i += chunkSize) {
-    const chunk = validAdsetIds.slice(i, i + chunkSize);
-    const batchPayload = chunk.map(adsetId => ({
-      method: 'GET',
-      relative_url: `${adsetId}/ads?fields=name&limit=200`
-    }));
-    const batchRes = await fetch(`https://graph.facebook.com/v19.0/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ access_token: TOKEN, batch: JSON.stringify(batchPayload) })
-    });
-    const batchData = await batchRes.json();
-    if (!Array.isArray(batchData)) continue;
-    for (let j = 0; j < batchData.length; j++) {
-      const item = batchData[j];
-      if (!item || item.code !== 200) continue;
-      try {
-        const parsed = JSON.parse(item.body);
-        const adsetId = chunk[j];
-        for (const ad of (parsed.data || [])) {
-          const key = normName(ad.name);
-          if (!adNameToAdsetSet.has(key)) adNameToAdsetSet.set(key, new Set());
-          adNameToAdsetSet.get(key).add(adsetId);
-        }
-      } catch(e) { /* skip */ }
-    }
+    if (!adNameToAdsetSet.has(key)) adNameToAdsetSet.set(key, new Set());
+    adNameToAdsetSet.get(key).add(adsetKey);
   }
 
   const result = new Map();
   for (const [name, set] of adNameToAdsetSet) result.set(name, set.size);
-  console.log(`[TierDebug] act_${accountId} mapped ad names=${result.size}`);
   return result;
 }
+
+// 保留空實作，讓 fetchClientData 不報錯（實際不再呼叫 API）
+async function fetchActiveAdsetMap(accountId) { return new Map(); }
 
 /* ══════════════════════════════════════════════
    KOL 受眾測試分析
@@ -681,19 +610,8 @@ async function fetchClientData(ci) {
   const r15a=getExtendedDateRange(15);
   const r15b={since:getExtendedDateRange(30).since, until:getExtendedDateRange(16).since};
 
-  // 同步拉 active adsets（方案 A）
-  const activeAdsetMaps = [];
-  for (const acc of client.accounts) {
-    const m = await fetchActiveAdsetMap(acc).catch(e => { console.warn('activeAdset err', e.message); return new Map(); });
-    activeAdsetMaps.push(m);
-  }
-  // 合併多帳號的 activeAdsetMap
-  const mergedActiveMap = new Map();
-  for (const m of activeAdsetMaps) {
-    for (const [name, count] of m) {
-      mergedActiveMap.set(name, (mergedActiveMap.get(name) || 0) + count);
-    }
-  }
+  // activeAdsetMap 改在資料全部載入後，用 ads30d insights 計算（不需要額外 API）
+  // 這裡先留空 Map，最後 fetchClientData return 時再組
 
   for(const acc of client.accounts){
     const[t,y,at,ay,mo,ap,a30a,a30b]=await Promise.all([
@@ -728,8 +646,7 @@ async function fetchClientData(ci) {
     monthTotal:mergeInsights(res.monthTotal),
     adsetCountToday:uniqAdsets(res.adsToday),
     adsetCountYesterday:uniqAdsets(res.adsPrev),
-    ads30d:res.ads30d,
-    activeAdsetMap: mergedActiveMap   // ★ 新增：開啟中的 adset map
+    ads30d:res.ads30d
   };
 }
 
@@ -1234,8 +1151,10 @@ function renderFlatTable(ci, rawAds) {
   // 取得帳戶月花費（從 cache）
   const cachedData = _reportCache[ci];
   const monthSpend = cachedData?.extra?.monthTotal ? parseFloat(cachedData.extra.monthTotal.spend || 0) : 0;
-  // 取得 active adset map
-  const activeAdsetMap = cachedData?.extra?.activeAdsetMap || new Map();
+  // 用 ads30d insights 計算素材強度（不需額外 API）
+  const activeAdsetMap = cachedData?.extra?.ads30d
+    ? buildActiveAdsetMapFromInsights(cachedData.extra.ads30d, ci)
+    : new Map();
 
   let classifiedAds = mergeAdsByName(rawAds, ci)
     .map(ad => ({ ...ad, _type: classType(ad._campaign || ad.campaign_name, ci) }))
@@ -1497,7 +1416,7 @@ async function loadClient(ci) {
       adsetCountToday: data.adsetCountToday,
       adsetCountYesterday: data.adsetCountYesterday,
       ads30d: data.ads30d || [],
-      activeAdsetMap: data.activeAdsetMap || new Map()   // ★ 傳入 active adset map
+
     });
   } catch (e) {
     dot.className = 'status-dot error'; txt.textContent = '資料載入失敗';
