@@ -347,30 +347,74 @@ function tierBadgeHtml(tier) {
    回傳 Map<normAdName, count>
 ══════════════════════════════════════════════ */
 
-// Meta adset effective_status 白名單：只有真正在跑的才計入
-const VALID_ADSET_STATUSES = new Set(['ACTIVE', 'LEARNING_LIMITED']);
-
 async function fetchActiveAdsetMap(accountId) {
-  // 拉全部 adsets（不帶狀態篩選，避免 API 行為差異），程式層過濾
-  const adsetFields = 'id,name,effective_status,campaign{name}';
+  // Meta adset effective_status 只反映開關狀態（ACTIVE/PAUSED/CAMPAIGN_PAUSED 等）
+  // 「學習中」「學習效果有限」對應的是 configured_status=ACTIVE（開關開著）
+  // + effective_status 不是 PAUSED 系列
+  // 判斷邏輯：adset 開關開著（configured_status=ACTIVE）
+  //           且 campaign 開關也開著（effective_status != CAMPAIGN_PAUSED）
+  //           且 adset 本身沒被暫停（effective_status != PAUSED）
+  // 這就是 Meta 後台顯示「學習中」或「學習效果有限」的 adset
+
+  // PAUSED 狀態集合（排除這些）
+  const PAUSED_STATUSES = new Set([
+    'PAUSED', 'CAMPAIGN_PAUSED', 'ADSET_PAUSED',
+    'DELETED', 'ARCHIVED', 'PENDING_REVIEW', 'DISAPPROVED',
+    'PENDING_BILLING_INFO', 'CAMPAIGN_GROUP_PAUSED'
+  ]);
+
+  const adsetFields = 'id,name,effective_status,configured_status,campaign{name,effective_status}';
+  let adsets = [];
+  // 只拉 configured_status=ACTIVE（adset 開關開著的）
+  let url = `https://graph.facebook.com/v19.0/act_${accountId}/adsets?fields=${adsetFields}&effective_status=["ACTIVE","LEARNING_LIMITED","IN_PROCESS","WITH_ISSUES"]&limit=200&access_token=${TOKEN}`;
+  let pg = 0;
+  while (url && pg < 10) {
+    const res = await fetch(url); const data = await res.json();
+    if (data.error) {
+      console.warn(`[TierDebug] fetchActiveAdsetMap error act_${accountId}:`, data.error.message);
+      // fallback: 拉全部，程式層判斷
+      return fetchActiveAdsetMapFallback(accountId);
+    }
+    if (data.data) adsets = adsets.concat(data.data);
+    url = data.paging?.next || null; pg++;
+  }
+
+  console.log(`[TierDebug] act_${accountId} fetched=${adsets.length}, statuses:`, (() => { const c={}; adsets.forEach(a=>c[a.effective_status]=(c[a.effective_status]||0)+1); return c; })());
+
+  return buildAdsetMap(accountId, adsets);
+}
+
+async function fetchActiveAdsetMapFallback(accountId) {
+  // Fallback：不帶狀態篩選，全拉後程式層判斷
+  const adsetFields = 'id,name,effective_status,configured_status,campaign{name,effective_status}';
   let adsets = [];
   let url = `https://graph.facebook.com/v19.0/act_${accountId}/adsets?fields=${adsetFields}&limit=200&access_token=${TOKEN}`;
   let pg = 0;
   while (url && pg < 10) {
     const res = await fetch(url); const data = await res.json();
-    if (data.error) { console.warn('fetchActiveAdsetMap error:', data.error.message); return new Map(); }
+    if (data.error) { console.warn('[TierDebug] fallback error:', data.error.message); return new Map(); }
     if (data.data) adsets = adsets.concat(data.data);
     url = data.paging?.next || null; pg++;
   }
+  console.log(`[TierDebug] fallback act_${accountId} total=${adsets.length}, statuses:`, (() => { const c={}; adsets.forEach(a=>c[a.effective_status]=(c[a.effective_status]||0)+1); return c; })());
+  return buildAdsetMap(accountId, adsets);
+}
 
-  // Debug: 把所有 effective_status 值印到 console，方便確認 API 回傳字串
-  const statusCounts = {};
-  for (const a of adsets) { statusCounts[a.effective_status] = (statusCounts[a.effective_status]||0)+1; }
-  console.log(`[TierDebug] act_${accountId} adsets total=${adsets.length}, status breakdown:`, statusCounts);
+async function buildAdsetMap(accountId, adsets) {
+  // 判斷「正在投遞中」：
+  // effective_status 不在暫停/刪除清單，且 campaign 也沒被暫停
+  const EXCLUDED = new Set([
+    'PAUSED','CAMPAIGN_PAUSED','ADSET_PAUSED','DELETED','ARCHIVED',
+    'PENDING_REVIEW','DISAPPROVED','PENDING_BILLING_INFO','CAMPAIGN_GROUP_PAUSED'
+  ]);
 
-  // 程式層過濾：只保留 VALID_ADSET_STATUSES（學習中 / 學習效果有限），排除 campaign 類型
   const validAdsets = adsets.filter(adset => {
-    if (!VALID_ADSET_STATUSES.has(adset.effective_status)) return false;
+    // adset 本身必須是投遞中
+    if (EXCLUDED.has(adset.effective_status)) return false;
+    // campaign 也必須是開著的
+    const campStatus = adset.campaign?.effective_status || '';
+    if (EXCLUDED.has(campStatus)) return false;
+    // campaign 類型過濾
     const campName = (adset.campaign?.name || '').toUpperCase();
     if (campName.includes('素材')) return false;
     if (campName.includes('ASC')) return false;
@@ -379,19 +423,19 @@ async function fetchActiveAdsetMap(accountId) {
     return true;
   });
 
-  console.log(`[TierDebug] act_${accountId} validAdsets after filter=${validAdsets.length}`);
+  console.log(`[TierDebug] act_${accountId} validAdsets=${validAdsets.length}`);
   if (validAdsets.length === 0) return new Map();
 
   const validAdsetIds = validAdsets.map(a => a.id);
 
-  // 批次取 ads（每次最多 50 個 adset，不帶 effective_status 篩選，讓所有 ad 都回來）
+  // 批次取 ads
   const adNameToAdsetSet = new Map();
   const chunkSize = 50;
   for (let i = 0; i < validAdsetIds.length; i += chunkSize) {
     const chunk = validAdsetIds.slice(i, i + chunkSize);
     const batchPayload = chunk.map(adsetId => ({
       method: 'GET',
-      relative_url: `${adsetId}/ads?fields=name,effective_status&limit=200`
+      relative_url: `${adsetId}/ads?fields=name&limit=200`
     }));
     const batchRes = await fetch(`https://graph.facebook.com/v19.0/`, {
       method: 'POST',
@@ -415,12 +459,9 @@ async function fetchActiveAdsetMap(accountId) {
     }
   }
 
-  // 轉成 Map<normAdName, count>
   const result = new Map();
-  for (const [name, set] of adNameToAdsetSet) {
-    result.set(name, set.size);
-  }
-  console.log(`[TierDebug] act_${accountId} unique ad names mapped=${result.size}`);
+  for (const [name, set] of adNameToAdsetSet) result.set(name, set.size);
+  console.log(`[TierDebug] act_${accountId} mapped ad names=${result.size}`);
   return result;
 }
 
