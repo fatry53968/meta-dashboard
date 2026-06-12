@@ -363,40 +363,19 @@ async function fetchActiveAdsetMap(accountId) {
     'PENDING_BILLING_INFO', 'CAMPAIGN_GROUP_PAUSED'
   ]);
 
-  const adsetFields = 'id,name,effective_status,configured_status,campaign{name,effective_status}';
-  let adsets = [];
-  // 只拉 configured_status=ACTIVE（adset 開關開著的）
-  let url = `https://graph.facebook.com/v19.0/act_${accountId}/adsets?fields=${adsetFields}&effective_status=["ACTIVE","LEARNING_LIMITED","IN_PROCESS","WITH_ISSUES"]&limit=200&access_token=${TOKEN}`;
-  let pg = 0;
-  while (url && pg < 10) {
-    const res = await fetch(url); const data = await res.json();
-    if (data.error) {
-      console.warn(`[TierDebug] fetchActiveAdsetMap error act_${accountId}:`, data.error.message);
-      // fallback: 拉全部，程式層判斷
-      return fetchActiveAdsetMapFallback(accountId);
-    }
-    if (data.data) adsets = adsets.concat(data.data);
-    url = data.paging?.next || null; pg++;
-  }
-
-  console.log(`[TierDebug] act_${accountId} fetched=${adsets.length}, statuses:`, (() => { const c={}; adsets.forEach(a=>c[a.effective_status]=(c[a.effective_status]||0)+1); return c; })());
-
-  return buildAdsetMap(accountId, adsets);
-}
-
-async function fetchActiveAdsetMapFallback(accountId) {
-  // Fallback：不帶狀態篩選，全拉後程式層判斷
-  const adsetFields = 'id,name,effective_status,configured_status,campaign{name,effective_status}';
+  // 不帶 effective_status 篩選，全拉後程式層判斷，避免 Meta API 多值格式問題
+  const adsetFields = 'id,name,effective_status,campaign{name,effective_status}';
   let adsets = [];
   let url = `https://graph.facebook.com/v19.0/act_${accountId}/adsets?fields=${adsetFields}&limit=200&access_token=${TOKEN}`;
   let pg = 0;
   while (url && pg < 10) {
     const res = await fetch(url); const data = await res.json();
-    if (data.error) { console.warn('[TierDebug] fallback error:', data.error.message); return new Map(); }
+    if (data.error) { console.warn(`[TierDebug] fetchActiveAdsetMap error act_${accountId}:`, data.error.message); return new Map(); }
     if (data.data) adsets = adsets.concat(data.data);
     url = data.paging?.next || null; pg++;
   }
-  console.log(`[TierDebug] fallback act_${accountId} total=${adsets.length}, statuses:`, (() => { const c={}; adsets.forEach(a=>c[a.effective_status]=(c[a.effective_status]||0)+1); return c; })());
+
+  console.log(`[TierDebug] act_${accountId} total=${adsets.length}, statuses:`, (() => { const c={}; adsets.forEach(a=>c[a.effective_status]=(c[a.effective_status]||0)+1); return c; })());
   return buildAdsetMap(accountId, adsets);
 }
 
@@ -409,12 +388,9 @@ async function buildAdsetMap(accountId, adsets) {
   ]);
 
   const validAdsets = adsets.filter(adset => {
-    // adset 本身必須是投遞中
+    // adset 本身必須是投遞中（不在排除清單）
     if (EXCLUDED.has(adset.effective_status)) return false;
-    // campaign 也必須是開著的
-    const campStatus = adset.campaign?.effective_status || '';
-    if (EXCLUDED.has(campStatus)) return false;
-    // campaign 類型過濾
+    // campaign 類型過濾（campaign 可能沒拉到，用 name 判斷即可）
     const campName = (adset.campaign?.name || '').toUpperCase();
     if (campName.includes('素材')) return false;
     if (campName.includes('ASC')) return false;
@@ -423,7 +399,9 @@ async function buildAdsetMap(accountId, adsets) {
     return true;
   });
 
-  console.log(`[TierDebug] act_${accountId} validAdsets=${validAdsets.length}`);
+  // Debug：印出前5筆非排除的 adset 狀態，方便確認
+  const sample = adsets.filter(a => !EXCLUDED.has(a.effective_status)).slice(0,5);
+  console.log(`[TierDebug] act_${accountId} validAdsets=${validAdsets.length}, sample:`, sample.map(a=>({name:a.name.slice(0,30), status:a.effective_status})));
   if (validAdsets.length === 0) return new Map();
 
   const validAdsetIds = validAdsets.map(a => a.id);
